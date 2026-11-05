@@ -12,8 +12,8 @@
 
 | 平台 | 文件 | Java |
 |---|---|---|
-| Minecraft **1.21.1** + NeoForge 21.1.x | [`release/mcstock-1.0.2-neoforge-1.21.1.jar`](release/mcstock-1.0.2-neoforge-1.21.1.jar) | **21** |
-| Minecraft **1.20.1** + Forge 47.2.20+ / NeoForge 47.1.x | `mcstock-1.0.2-forge-1.20.1.jar`（在 1.20.1 分支/发布页） | **17** |
+| Minecraft **1.21.1** + NeoForge 21.1.x | [`release/mcstock-1.0.2-neoforge-1.21.1.jar`](release/mcstock-1.0.2-neoforge-1.21.1.jar)（或从 [Releases](https://github.com/qiushaonan/mcstock/releases) 下载） | **21** |
+| Minecraft **1.20.1** + Forge 47.2.20+ / NeoForge 47.1.x | `mcstock-1.0.2-forge-1.20.1.jar` —— **尚未上传到本仓库**（需要的话可以加一个 `1.20.1` 分支） | **17** |
 
 安装步骤见 [docs/INSTALL.md](docs/INSTALL.md)（1.20.1 见 `INSTALL-1.20.1.md`）；玩法说明见 [docs/INTRO.md](docs/INTRO.md)（英文 [INTRO_EN.md](docs/INTRO_EN.md)）。
 
