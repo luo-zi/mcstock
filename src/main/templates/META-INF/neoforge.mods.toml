@@ -1,0 +1,36 @@
+modLoader="javafml" #mandatory
+loaderVersion="${loader_version_range}" #mandatory
+license="${mod_license}"
+
+[[mods]] #mandatory
+modId="${mod_id}" #mandatory
+version="${mod_version}" #mandatory
+
+# 显示名与描述用中文写在这里；gradle.properties 里保持 ASCII（见那边的注释），
+# build.gradle 给 ProcessResources 指定了 filteringCharset=UTF-8，所以这里可以安全写中文。
+displayName="MC 股市" #mandatory
+
+logoFile="assets/mcstock/logo.png" #optional
+authors="qiushaonan"
+
+description='''
+把任何物品丢进回收栏换成金币，在三个股票行里选倍数与杠杆（最高 400 倍）下注，
+2 秒一跳的行情、爆仓价红线、做空与加仓，赚到的钱再回到采购页换成想要的物资。
+
+A tiny stock market for Minecraft: recycle anything into coins, then trade three
+stocks with up to 400x leverage on a 2-second tick, and spend the profits back on items.
+'''
+
+[[dependencies.${mod_id}]] #optional
+    modId="neoforge" #mandatory
+    type="required" #mandatory
+    versionRange="[${neo_version},)" #mandatory
+    ordering="NONE"
+    side="BOTH"
+
+[[dependencies.${mod_id}]]
+    modId="minecraft"
+    type="required"
+    versionRange="${minecraft_version_range}"
+    ordering="NONE"
+    side="BOTH"

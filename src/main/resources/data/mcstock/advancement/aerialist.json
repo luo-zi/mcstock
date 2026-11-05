@@ -1,0 +1,30 @@
+{
+  "display": {
+    "icon": {
+      "count": 1,
+      "id": "minecraft:feather"
+    },
+    "title": {
+      "translate": "advancement.mcstock.aerialist.title"
+    },
+    "description": {
+      "translate": "advancement.mcstock.aerialist.description"
+    },
+    "frame": "challenge",
+    "show_toast": true,
+    "announce_to_chat": true,
+    "hidden": false,
+    "background": "minecraft:textures/gui/advancements/backgrounds/stone.png"
+  },
+  "criteria": {
+    "impossible": {
+      "trigger": "minecraft:impossible"
+    }
+  },
+  "requirements": [
+    [
+      "impossible"
+    ]
+  ],
+  "sends_telemetry_event": true
+}

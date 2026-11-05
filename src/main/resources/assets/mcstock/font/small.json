@@ -1,0 +1,13 @@
+{
+  "providers": [
+    {
+      "type": "bitmap",
+      "file": "mcstock:font/small.png",
+      "height": 6,
+      "ascent": 6,
+      "chars": [
+        "0123456789.,%+-/×·"
+      ]
+    }
+  ]
+}

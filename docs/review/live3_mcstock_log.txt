@@ -1,0 +1,17 @@
+﻿# 本轮 runClient 的 [mcstock] 日志（latest.log + debug.log 合并去重）
+
+===== latest.log =====
+[0410月2026 23:10:34.758] [Render thread/INFO] [net.neoforged.neoforge.gametest.GameTestHooks/]: Enabled Gametest Namespaces: [mcstock]
+[0410月2026 23:10:42.400] [Render thread/INFO] [com.qiushaonan.mcstock.market.ItemValueRules/]: [mcstock] 估值种子已加载：66 项物品 + 4 个标签（来自 1 个文件）
+[0410月2026 23:11:06.740] [Render thread/INFO] [com.qiushaonan.mcstock.client.StockScreen/]: [mcstock] shop click: mouse=(148.0, 94.0) button=0 shopIndexAt=0 shopView.size=710 grid=Rect[x=139, y=85, w=360, h=126]
+[0410月2026 23:11:06.741] [Render thread/INFO] [com.qiushaonan.mcstock.client.StockScreen/]: [mcstock] shop click -> C2SPurchaseItem item=minecraft:stone count=1（0 = 一组）
+[0410月2026 23:11:09.240] [Render thread/INFO] [com.qiushaonan.mcstock.client.StockScreen/]: [mcstock] shop click: mouse=(222.0, 49.0) button=0 shopIndexAt=-1 shopView.size=710 grid=Rect[x=139, y=85, w=360, h=126]
+
+===== debug.log =====
+[0410月2026 23:10:34.758] [Render thread/INFO] [net.neoforged.neoforge.gametest.GameTestHooks/]: Enabled Gametest Namespaces: [mcstock]
+[0410月2026 23:10:42.400] [Render thread/INFO] [com.qiushaonan.mcstock.market.ItemValueRules/]: [mcstock] 估值种子已加载：66 项物品 + 4 个标签（来自 1 个文件）
+[0410月2026 23:10:44.028] [Server thread/DEBUG] [com.qiushaonan.mcstock.market.MinecraftRecipeGraph/]: [mcstock] 配方图构建完成：1260 条配方 → 838 种产物
+[0410月2026 23:11:06.740] [Render thread/INFO] [com.qiushaonan.mcstock.client.StockScreen/]: [mcstock] shop click: mouse=(148.0, 94.0) button=0 shopIndexAt=0 shopView.size=710 grid=Rect[x=139, y=85, w=360, h=126]
+[0410月2026 23:11:06.741] [Render thread/INFO] [com.qiushaonan.mcstock.client.StockScreen/]: [mcstock] shop click -> C2SPurchaseItem item=minecraft:stone count=1（0 = 一组）
+[0410月2026 23:11:06.741] [Server thread/DEBUG] [com.qiushaonan.mcstock.market.StockService/]: [mcstock] purchase 收到: item=minecraft:stone count=1 单价(分)=200 余额(分)=100000
+[0410月2026 23:11:09.240] [Render thread/INFO] [com.qiushaonan.mcstock.client.StockScreen/]: [mcstock] shop click: mouse=(222.0, 49.0) button=0 shopIndexAt=-1 shopView.size=710 grid=Rect[x=139, y=85, w=360, h=126]
