@@ -42,8 +42,13 @@ public final class ModNetwork {
      * <p>「3 → 4」的原因（2026-10-06 线上掉线事故）：{@code S2CShopCatalog} 从
      * 「一个包塞整份目录」改成**分片**（片头多了 {@code part} / {@code totalParts} 两个字段）。
      * 旧客户端会把片头当成「条目数」读，字段全错位 —— 也就是必须换版本号。
+     *
+     * <p>「4 → 5」的原因（条件单）：新增 {@link C2SPlaceConditionalOrder} /
+     * {@link C2SCancelConditionalOrder} / {@link S2CConditionalOrders} 三个载荷类型。
+     * 载荷类型表是连接协商的一部分，旧客户端不认识新通道，必须靠版本号挡住；
+     * {@link S2CStockSnapshot} 本身的字段一个没动，所以不需要动那个大 record。
      */
-    private static final String PROTOCOL_VERSION = "4";
+    private static final String PROTOCOL_VERSION = "5";
 
     private ModNetwork() {
     }
@@ -84,6 +89,15 @@ public final class ModNetwork {
                 C2SRequestSnapshot.TYPE,
                 C2SRequestSnapshot.STREAM_CODEC,
                 C2SRequestSnapshot::handle);
+        // 条件单：挂单 / 撤单（字段全是提示值，服务端重算；协议 v5）
+        registrar.playToServer(
+                C2SPlaceConditionalOrder.TYPE,
+                C2SPlaceConditionalOrder.STREAM_CODEC,
+                C2SPlaceConditionalOrder::handle);
+        registrar.playToServer(
+                C2SCancelConditionalOrder.TYPE,
+                C2SCancelConditionalOrder.STREAM_CODEC,
+                C2SCancelConditionalOrder::handle);
 
         // ---------- 服务端 → 客户端 ----------
         // 行情快照：所有数字一次性推过去（价格 / 涨跌 / 持仓 / 阴阳柱 / 资金）
@@ -101,5 +115,10 @@ public final class ModNetwork {
                 S2CShopCatalog.TYPE,
                 S2CShopCatalog.STREAM_CODEC,
                 S2CShopCatalog::handle);
+        // 条件单簿（每次推快照时顺手带一份，整份替换；协议 v5）
+        registrar.playToClient(
+                S2CConditionalOrders.TYPE,
+                S2CConditionalOrders.STREAM_CODEC,
+                S2CConditionalOrders::handle);
     }
 }

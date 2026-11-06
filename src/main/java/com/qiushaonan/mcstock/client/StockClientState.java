@@ -1,5 +1,6 @@
 package com.qiushaonan.mcstock.client;
 
+import com.qiushaonan.mcstock.market.ConditionalOrder;
 import com.qiushaonan.mcstock.market.MarketRegime;
 import com.qiushaonan.mcstock.market.Position;
 import com.qiushaonan.mcstock.market.StockDefs;
@@ -79,6 +80,15 @@ public final class StockClientState {
     public static MarketRegime regime = MarketRegime.CALM;
     /** 新闻流：**最新在最前**（最多 {@code StockDefs.NEWS_KEEP} 条）。整份替换。 */
     public static S2CStockSnapshot.NewsItem[] news = new S2CStockSnapshot.NewsItem[0];
+
+    /**
+     * 玩家挂着的全部条件单（协议 v5，由 {@code S2CConditionalOrders} **整份替换**）。
+     *
+     * <p>存的是 {@link ConditionalOrder} 而非网络包里的 View：那个 record 是两端共用的纯 Java 类，
+     * 触发判定、语言键、夹取都在它身上，GUI 直接拿来画，不必再维护第二份「客户端订单」形状。
+     * 客户端**只显示、只发撤单 id**，不在这里做任何触发判定（服务端权威）。
+     */
+    public static ConditionalOrder[] conditionalOrders = new ConditionalOrder[0];
     /**
      * 收到**这一份**快照的时刻（{@code System.currentTimeMillis()}）。
      *

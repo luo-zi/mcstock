@@ -1,6 +1,8 @@
 package com.qiushaonan.mcstock.client;
 
+import com.qiushaonan.mcstock.command.McStockCommand;
 import com.qiushaonan.mcstock.items.ModItems;
+import com.qiushaonan.mcstock.market.ConditionalOrder;
 import com.qiushaonan.mcstock.market.EventType;
 import com.qiushaonan.mcstock.market.MarketRegime;
 import com.qiushaonan.mcstock.market.Position;
@@ -8,7 +10,9 @@ import com.qiushaonan.mcstock.market.PositionMath;
 import com.qiushaonan.mcstock.market.StockCatalog;
 import com.qiushaonan.mcstock.market.StockDefs;
 import com.qiushaonan.mcstock.menu.StockMenu;
+import com.qiushaonan.mcstock.network.C2SCancelConditionalOrder;
 import com.qiushaonan.mcstock.network.C2SClosePosition;
+import com.qiushaonan.mcstock.network.C2SPlaceConditionalOrder;
 import com.qiushaonan.mcstock.network.C2SPurchaseItem;
 import com.qiushaonan.mcstock.network.C2SRecycleBar;
 import com.qiushaonan.mcstock.network.C2SRequestSnapshot;
@@ -138,6 +142,36 @@ public class StockScreen extends AbstractContainerScreen<StockMenu> {
     private boolean helpOpen;
     /** 帮助覆盖层的滚动行偏移（内容比可视区多时用滚轮/方向键翻）。 */
     private int helpScroll;
+
+    // ---------- 条件单覆盖层（标题栏按钮打开，与帮助覆盖层互斥） ----------
+
+    /**
+     * 条件单覆盖层是否打开。
+     *
+     * <p>与帮助覆盖层同一个套路：打开时 {@link #render} 早退，只画这一层 + 手动绘制本层控件，
+     * 其它控件全部隐藏 —— **光盖住不隐藏**的话玩家会点到看不见的买入/卖出/容器槽
+     * （帮助面板那条踩过的坑）。
+     */
+    private boolean condOpen;
+    /** 挂单列表的滚动行偏移（一屏 {@code Layout#condVisibleRows()} 行）。 */
+    private int condScroll;
+    /** 标题栏「条件单」按钮：打开覆盖层时它是「再点一下关掉」的入口。 */
+    private Button condButton;
+    /**
+     * 条件单覆盖层的控件：打开时只有这些 visible，早退的 {@link #render} 也只手动绘制这些。
+     *
+     * <p>⚠️ 行尾「撤」**不是控件**（行数每帧都可能变），它是画出来的框 + {@link #mouseClicked}
+     * 里的命中判定 —— 和购买页网格同一套做法，省掉「每 tick 拆装按钮」的复杂度。
+     */
+    private final List<AbstractWidget> condWidgets = new ArrayList<>();
+    private EditBox condTriggerField;
+    /** 触发价填写栏的内容（重建控件后要恢复玩家刚输入的一半数字）。 */
+    private String condTriggerText = "";
+    private Button condDirButton;
+    private Button condActionButton;
+    /** 表单当前选中的方向 / 动作序号（与协议、枚举同一组序号）。 */
+    private int condDirection = 0;
+    private int condAction = 0;
 
     // ---------- 持仓列表（右列底部，可滚动，每行一个「平」按钮） ----------
 
@@ -297,9 +331,9 @@ public class StockScreen extends AbstractContainerScreen<StockMenu> {
         //    主动问一次，服务端立刻回一份，走势图当场就有。
         requestSnapshot();
 
-        // ⑤ 帮助覆盖层的开关状态要在重建控件之后重新落到控件可见性上
+        // ⑤ 覆盖层的开关状态要在重建控件之后重新落到控件可见性上
         //    （rebuildWidgets 会清掉所有控件、重新 addRenderableWidget，可见性回到默认 true）
-        applyHelpVisibility();
+        applyOverlayVisibility();
     }
 
     /**
@@ -327,6 +361,11 @@ public class StockScreen extends AbstractContainerScreen<StockMenu> {
         this.helpButton = StockWidgets.iconButton(l.helpBtn(), StockGuiLayout.ICON_HELP,
                 Component.translatable("gui.mcstock.help.title"), this::toggleHelp);
         addRenderableWidget(this.helpButton);
+        // 「条件单」文字按钮（帮助按钮左边）：打开条件单覆盖层
+        this.condButton = StockWidgets.button(l.condBtn(),
+                Component.translatable("gui.mcstock.cond.button"), this::toggleCond);
+        addRenderableWidget(this.condButton);
+        buildCondWidgets();
 
         // ---------- 行情页：左列卡片（整张卡片就是按钮）+ 买入/卖出 + 数量/杠杆 + 持仓列表 ----------
         if (this.page == PAGE_TRADE) {
@@ -417,6 +456,85 @@ public class StockScreen extends AbstractContainerScreen<StockMenu> {
                 () -> applyLeverage(stepUp(LEVERAGE_STEPS, leverage())),
                 () -> applyLeverage(stepDown(LEVERAGE_STEPS, leverage())),
                 () -> applyLeverage(StockGuiLayout.LEVERAGE_MAX));
+    }
+
+    /**
+     * 条件单覆盖层的表单控件：**一次建好、常驻 children**，靠 {@code visible} 控制显隐。
+     *
+     * <p>为什么不做「打开时再建」：覆盖层打开时 {@link #render} 早退，控件表不会被原版渲染，
+     * 但鼠标/键盘事件仍由原版派发 —— 常驻控件 + 显隐切换是最不容易漏事件的一种。
+     * 行尾「撤」是纯绘制 + 命中判定（行数会变），所以不进这张表。
+     */
+    private void buildCondWidgets() {
+        StockGuiLayout.Layout l = this.layout;
+        this.condWidgets.clear();
+        this.condWidgets.add(this.condButton);
+
+        // 触发价：普通字体 EditBox（要能显示小数点）。数字/点/最多两位小数，
+        // 解析复用 /mcstock 那个纯函数 parseCoins（金币 → 分），不在这里另写一套金额换算。
+        this.condTriggerField = StockWidgets.textField(this.font, l.condTriggerField(), 12,
+                Component.translatable("gui.mcstock.cond.field.trigger"));
+        this.condTriggerField.setFilter(text -> text == null || text.matches("\\d*\\.?\\d{0,2}"));
+        this.condTriggerField.setValue(this.condTriggerText.isEmpty()
+                ? StockClientState.price(StockClientState.priceOf(clampStock(StockClientState.selected)))
+                : this.condTriggerText);
+        this.condTriggerField.setResponder(text -> this.condTriggerText = text == null ? "" : text);
+        addRenderableWidget(this.condTriggerField);
+        this.condWidgets.add(this.condTriggerField);
+
+        this.condDirButton = StockWidgets.button(l.condDirBtn(), condDirLabel(), this::cycleCondDirection);
+        addRenderableWidget(this.condDirButton);
+        this.condWidgets.add(this.condDirButton);
+
+        this.condActionButton = StockWidgets.button(l.condActionBtn(), condActionLabel(), this::cycleCondAction);
+        addRenderableWidget(this.condActionButton);
+        this.condWidgets.add(this.condActionButton);
+
+        Button placeButton = StockWidgets.button(l.condPlaceBtn(),
+                Component.translatable("gui.mcstock.cond.btn.place"), this::sendCondPlace);
+        addRenderableWidget(placeButton);
+        this.condWidgets.add(placeButton);
+    }
+
+    private Component condDirLabel() {
+        return Component.translatable(ConditionalOrder.directionKey(
+                ConditionalOrder.direction(this.condDirection)));
+    }
+
+    private Component condActionLabel() {
+        return Component.translatable(ConditionalOrder.actionKey(
+                ConditionalOrder.action(this.condAction)));
+    }
+
+    private void cycleCondDirection() {
+        this.condDirection = this.condDirection == 0 ? 1 : 0;
+        if (this.condDirButton != null) {
+            this.condDirButton.setMessage(condDirLabel());
+        }
+    }
+
+    private void cycleCondAction() {
+        this.condAction = (this.condAction + 1) % ConditionalOrder.Action.values().length;
+        if (this.condActionButton != null) {
+            this.condActionButton.setMessage(condActionLabel());
+        }
+    }
+
+    /** 挂一张单：客户端只发「我填了什么」，六个字段全部由服务端重算。 */
+    private void sendCondPlace() {
+        if (this.condTriggerField == null) {
+            return;
+        }
+        McStockCommand.Coins price = McStockCommand.parseCoins(this.condTriggerField.getValue());
+        if (!price.ok() || price.cents() <= 0L) {
+            // 本地没资格改服务端的提示行：把非法输入恢复成当前现价，给一个可见的反馈
+            this.condTriggerField.setValue(StockClientState.price(
+                    StockClientState.priceOf(clampStock(StockClientState.selected))));
+            return;
+        }
+        PacketDistributor.sendToServer(new C2SPlaceConditionalOrder(
+                clampStock(StockClientState.selected), this.condDirection, price.cents(),
+                this.condAction, qty(), leverage()));
     }
 
     private void buildShopWidgets() {
@@ -731,22 +849,49 @@ public class StockScreen extends AbstractContainerScreen<StockMenu> {
     private void toggleHelp() {
         this.helpOpen = !this.helpOpen;
         if (this.helpOpen) {
+            this.condOpen = false;      // 两个覆盖层互斥：同时开会出现两套底衬
             this.helpScroll = 0;
         }
-        applyHelpVisibility();
+        this.setFocused(null);
+        applyOverlayVisibility();
+    }
+
+    /** 开关条件单覆盖层；打开时把触发价预填成当前选中企业的现价（玩家一般就在这个价上下挂单）。 */
+    private void toggleCond() {
+        this.condOpen = !this.condOpen;
+        if (this.condOpen) {
+            this.helpOpen = false;
+            this.condScroll = 0;
+            if (this.condTriggerField != null) {
+                this.condTriggerField.setValue(StockClientState.price(
+                        StockClientState.priceOf(clampStock(StockClientState.selected))));
+            }
+        }
+        this.setFocused(this.condOpen ? this.condTriggerField : null);
+        applyOverlayVisibility();
     }
 
     /**
-     * 帮助打开时隐藏所有其它控件。
+     * 覆盖层打开时隐藏所有**不属于这一层**的控件。
      *
      * <p>为什么隐藏而不是只盖一层绘制：控件是**独立于绘制**的事件接收者，
-     * 光盖住不隐藏的话，玩家会点到看不见的买入/卖出/页签（实机踩过「点到看不见的东西」这类坑）。
-     * 帮助按钮自己不隐藏 —— 它是「再点一下关掉」的入口。
+     * 光盖住不隐藏的话，玩家会点到看不见的买入/卖出/页签/容器槽
+     * （实机踩过「点到看不见的东西」这类坑）。帮助按钮、条件单按钮分别是各自的关闭入口。
+     *
+     * <p>两个覆盖层互斥：条件单打开时只留 {@link #condWidgets}；帮助打开时只留帮助按钮；
+     * 都关闭时条件单控件一律隐藏，其余全部可见。
      */
-    private void applyHelpVisibility() {
+    private void applyOverlayVisibility() {
         for (var renderable : this.renderables) {
             if (renderable instanceof AbstractWidget widget) {
-                widget.visible = !this.helpOpen || widget == this.helpButton;
+                boolean condWidget = this.condWidgets.contains(widget);
+                if (this.condOpen) {
+                    widget.visible = condWidget;
+                } else if (this.helpOpen) {
+                    widget.visible = widget == this.helpButton;
+                } else {
+                    widget.visible = !condWidget;
+                }
             }
         }
     }
@@ -839,6 +984,104 @@ public class StockScreen extends AbstractContainerScreen<StockMenu> {
     /** 帮助面板正文的左右内边距（折行宽度与绘制 x 都用它，避免两处各写一个数）。 */
     private static final int HELP_PAD_X = 8;
 
+    // ==================== 条件单覆盖层 ====================
+
+    /**
+     * 画条件单覆盖层。
+     *
+     * <p>⚠️ 与 {@link #drawHelpOverlay} 的差别：这里有**控件**（填写栏 + 三个按钮），
+     * 所以 {@link #render} 早退之后必须手动调用 {@code widget.render(...)} 把它们画出来；
+     * 顺序是「外壳 → 底衬/行框 → 控件 → 文字」，文字在最上层（行号、撤字不会被按钮盖住）。
+     */
+    private void drawCondOverlay(GuiGraphics g, StockGuiLayout.Layout l, Font font,
+                                 int mouseX, int mouseY, float partialTick) {
+        drawChrome(g, l, mouseX, mouseY);
+        drawTitleBarText(g, l, font);
+        drawCondBg(g, l);
+        for (AbstractWidget widget : this.condWidgets) {
+            if (widget.visible) {
+                widget.render(g, mouseX, mouseY, partialTick);
+            }
+        }
+        drawCondText(g, l, font);
+    }
+
+    /** 覆盖层的底：不透明衬底 + 强调色边框 + 填写栏圆角底 + 挂单列表内嵌屏。 */
+    private void drawCondBg(GuiGraphics g, StockGuiLayout.Layout l) {
+        StockGuiLayout.Rect box = l.condPanel();
+        g.fill(box.x(), box.y(), box.right(), box.bottom(), StockTheme.COLOR_PANEL_FILL);
+        g.fill(box.x(), box.y(), box.right(), box.y() + 1, StockTheme.COLOR_ACCENT);
+        g.fill(box.x(), box.bottom() - 1, box.right(), box.bottom(), StockTheme.COLOR_ACCENT);
+        g.fill(box.x(), box.y(), box.x() + 1, box.bottom(), StockTheme.COLOR_ACCENT);
+        g.fill(box.right() - 1, box.y(), box.right(), box.bottom(), StockTheme.COLOR_ACCENT);
+        StockWidgets.fieldBox(g, l.condTriggerField());
+        if (l.condList().h() > 0) {
+            StockWidgets.insetBox(g, l.condList(), StockTheme.COLOR_INSET_FILL, StockTheme.COLOR_BORDER);
+        }
+        clampCondScroll(l);
+        int rows = Math.min(l.condVisibleRows(),
+                Math.max(0, StockClientState.conditionalOrders.length - this.condScroll));
+        for (int i = 0; i < rows; i++) {
+            StockGuiLayout.Rect row = l.condRow(i);
+            if (i > 0) {
+                g.fill(row.x() + 3, row.y(), row.right() - 3, row.y() + 1, StockTheme.COLOR_GRID_LINE);
+            }
+            StockGuiLayout.Rect cancel = l.condCancelBtn(i);
+            g.fill(cancel.x(), cancel.y(), cancel.right(), cancel.bottom(), StockTheme.COLOR_BORDER);
+        }
+    }
+
+    /** 覆盖层的文字：标题 / 当前企业与数量杠杆 / 说明 / 每行挂单 / 行尾「撤」。 */
+    private void drawCondText(GuiGraphics g, StockGuiLayout.Layout l, Font font) {
+        clampCondScroll(l);
+        StockWidgets.label(g, font, l.condTitle(),
+                Component.translatable("gui.mcstock.cond.title"), StockTheme.COLOR_ACCENT);
+        int stock = clampStock(StockClientState.selected);
+        StockWidgets.labelClipped(g, font, l.condInfo(),
+                Component.translatable("gui.mcstock.cond.info",
+                        Component.translatable(StockCatalog.nameKey(stock)),
+                        StockClientState.price(StockClientState.priceOf(stock)), qty(), leverage()),
+                StockTheme.COLOR_MUTED);
+        StockWidgets.labelClipped(g, font, l.condHelp(),
+                Component.translatable("gui.mcstock.cond.help"), StockTheme.COLOR_MUTED);
+
+        ConditionalOrder[] orders = StockClientState.conditionalOrders;
+        if (l.condVisibleRows() <= 0) {
+            return;
+        }
+        if (orders.length == 0) {
+            StockWidgets.labelClipped(g, font, l.condText(0),
+                    Component.translatable("gui.mcstock.cond.empty"), StockTheme.COLOR_MUTED);
+            return;
+        }
+        int rows = Math.min(l.condVisibleRows(), Math.max(0, orders.length - this.condScroll));
+        for (int i = 0; i < rows; i++) {
+            ConditionalOrder order = orders[this.condScroll + i];
+            Component line = Component.translatable("gui.mcstock.cond.row",
+                    order.id(),
+                    Component.translatable(StockCatalog.nameKey(order.stock())),
+                    Component.translatable(ConditionalOrder.directionKey(order.direction())),
+                    StockClientState.price(order.triggerCents()),
+                    Component.translatable(ConditionalOrder.actionKey(order.action())),
+                    order.qty(), order.leverage());
+            StockWidgets.labelClipped(g, font, l.condText(i), line, StockTheme.COLOR_TEXT);
+            StockWidgets.text(g, font, l.condCancelBtn(i),
+                    Component.translatable("gui.mcstock.cond.btn.cancel"), StockTheme.COLOR_TEXT, 0);
+        }
+    }
+
+    /** 挂单列表最多能往上滚几行（滚轮与每帧收口共用这一份换算）。 */
+    private int condMaxScroll() {
+        int rows = this.layout == null ? 0 : this.layout.condVisibleRows();
+        return Math.max(0, StockClientState.conditionalOrders.length - rows);
+    }
+
+    private void clampCondScroll(StockGuiLayout.Layout l) {
+        int rows = l == null ? 0 : l.condVisibleRows();
+        int max = Math.max(0, StockClientState.conditionalOrders.length - rows);
+        this.condScroll = Math.max(0, Math.min(max, this.condScroll));
+    }
+
     // ==================== 主动要一份完整快照 ====================
 
     /**
@@ -897,6 +1140,34 @@ public class StockScreen extends AbstractContainerScreen<StockMenu> {
      */
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
+        if (this.condOpen) {
+            // ⚠️ 覆盖层打开时**不走 super.mouseClicked**：那条路径会命中底下的容器槽
+            //    （行情页的槽虽然被摆到屏幕外，回收/购买页的槽可都还在原位）。
+            //    render() 早退了，事件通道却还在，所以这里只把这一击交给本层控件。
+            for (AbstractWidget widget : this.condWidgets) {
+                if (widget.visible && widget.mouseClicked(mouseX, mouseY, button)) {
+                    this.setFocused(widget);
+                    return true;
+                }
+            }
+            // 行尾「撤」是画出来的框（不是控件），自己按矩形命中
+            if (button == 0 && this.layout != null) {
+                clampCondScroll(this.layout);
+                int rows = Math.min(this.layout.condVisibleRows(),
+                        Math.max(0, StockClientState.conditionalOrders.length - this.condScroll));
+                for (int i = 0; i < rows; i++) {
+                    if (inside(this.layout.condCancelBtn(i), mouseX, mouseY)) {
+                        int index = this.condScroll + i;
+                        if (index < StockClientState.conditionalOrders.length) {
+                            PacketDistributor.sendToServer(new C2SCancelConditionalOrder(
+                                    StockClientState.conditionalOrders[index].id()));
+                        }
+                        return true;
+                    }
+                }
+            }
+            return true;   // 覆盖层里的一切点击都吃掉，绝不穿透
+        }
         // 持仓表格右缘的滚动条滑块：按住就开始拖（在控件派发**之前**判，
         // 免得滑块压在按钮边缘时被按钮抢走）
         if (this.page == PAGE_TRADE && button == 0 && this.layout != null) {
@@ -939,6 +1210,9 @@ public class StockScreen extends AbstractContainerScreen<StockMenu> {
      */
     @Override
     public boolean mouseDragged(double mouseX, double mouseY, int button, double dragX, double dragY) {
+        if (this.condOpen) {
+            return true;   // 覆盖层里没有可拖的东西，也不让底下容器的拖拽生效
+        }
         if (button == 0 && this.draggingPosScrollbar && this.layout != null) {
             StockGuiLayout.Rect track = this.layout.posScrollTrack();
             int rows = this.layout.posVisibleRows();
@@ -964,6 +1238,9 @@ public class StockScreen extends AbstractContainerScreen<StockMenu> {
     @Override
     public boolean mouseReleased(double mouseX, double mouseY, int button) {
         this.draggingPosScrollbar = false;
+        if (this.condOpen) {
+            return true;
+        }
         return super.mouseReleased(mouseX, mouseY, button);
     }
 
@@ -975,6 +1252,16 @@ public class StockScreen extends AbstractContainerScreen<StockMenu> {
      */
     @Override
     public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
+        if (this.condOpen && scrollY != 0 && this.layout != null
+                && inside(this.layout.condList(), mouseX, mouseY)) {
+            clampCondScroll(this.layout);
+            this.condScroll = Math.max(0, Math.min(condMaxScroll(),
+                    this.condScroll + (scrollY > 0 ? -1 : 1)));
+            return true;
+        }
+        if (this.condOpen) {
+            return true;      // 覆盖层打开时滚轮不做别的事
+        }
         if (this.helpOpen && scrollY != 0) {
             // 帮助覆盖层打开时，滚轮只翻帮助的页，不影响底下的表格/购买页
             this.helpScroll = Math.max(0, this.helpScroll + (scrollY > 0 ? -1 : 1));
@@ -1000,6 +1287,15 @@ public class StockScreen extends AbstractContainerScreen<StockMenu> {
      */
     @Override
     public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
+        if (this.condOpen) {
+            // ESC 只关覆盖层；其余按键交给 super，让触发价填写栏能正常打字
+            // （帮助覆盖层会吃掉所有按键，条件单这里不能照抄）
+            if (keyCode == org.lwjgl.glfw.GLFW.GLFW_KEY_ESCAPE) {
+                toggleCond();
+                return true;
+            }
+            return super.keyPressed(keyCode, scanCode, modifiers);
+        }
         if (this.helpOpen) {
             if (keyCode == org.lwjgl.glfw.GLFW.GLFW_KEY_ESCAPE) {
                 toggleHelp();
@@ -1444,6 +1740,10 @@ public class StockScreen extends AbstractContainerScreen<StockMenu> {
             drawHelpOverlay(g, this.layout, this.font);
             return;
         }
+        if (this.condOpen && this.layout != null) {
+            drawCondOverlay(g, this.layout, this.font, mouseX, mouseY, partialTick);
+            return;
+        }
         super.render(g, mouseX, mouseY, partialTick);
     }
 
@@ -1465,6 +1765,11 @@ public class StockScreen extends AbstractContainerScreen<StockMenu> {
         }
         drawChrome(g, l, mouseX, mouseY);
         if (this.helpOpen) {
+            return;
+        }
+        if (this.condOpen) {
+            // render() 已经早退，这里留一道是为了 renderBg 被别的路径直接调到时也不画底下的页
+            drawCondBg(g, l);
             return;
         }
         switch (this.page) {
@@ -1664,6 +1969,9 @@ public class StockScreen extends AbstractContainerScreen<StockMenu> {
         Font font = this.font;
 
         drawTitleBarText(g, l, font);
+        if (this.condOpen) {
+            return;      // 条件单覆盖层由 render() 单独画，走不到这里
+        }
         switch (this.page) {
             case PAGE_RECYCLE -> drawRecycleText(g, l, font);
             case PAGE_SHOP -> drawShopText(g, l, font, mouseX, mouseY);
@@ -1836,7 +2144,10 @@ public class StockScreen extends AbstractContainerScreen<StockMenu> {
     private static final String[][] FLASH_SHAPES = {
             // 0 = 行情页：下单 / 平仓 / 爆仓 / 余额不够 / 数量非法 / 仓位满
             flashShapes("traded.open", "traded.close", "traded.short", "closed_all", "liquidated",
-                    "liquidated_wiped", "no_cash", "no_position", "bad_qty", "pos_full"),
+                    "liquidated_wiped", "no_cash", "no_position", "bad_qty", "pos_full",
+                    // 条件单也属于行情页：挂单/撤单/触发提示不该漏到购买页上
+                    "cond.placed", "cond.cancelled", "cond.cleared", "cond.not_found",
+                    "cond.full", "cond.bad", "cond.triggered"),
             // 1 = 回收页
             flashShapes("recycled", "recycle_nothing", "recycle_partial"),
             // 2 = 购买页

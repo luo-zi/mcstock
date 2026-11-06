@@ -139,6 +139,43 @@ class McStockCommandTest {
         }
     }
 
+    // ==================== parseCondSpec：条件单参数文本 ====================
+
+    @Test
+    void parsesFullConditionalSpec() {
+        McStockCommand.CondSpec spec = McStockCommand.parseCondSpec(
+                "diamond_mine above 105.5 buy 100 5");
+        assertTrue(spec.ok());
+        assertEquals("diamond_mine", spec.stockId());
+        assertEquals(0, spec.direction(), "above = 序号 0");
+        assertEquals(10_550L, spec.triggerCents(), "105.5 金币 = 10550 分");
+        assertEquals(0, spec.action(), "buy = 序号 0");
+        assertEquals(100, spec.qty());
+        assertEquals(5, spec.leverage());
+    }
+
+    @Test
+    void parsesShortSpecWithDefaults() {
+        McStockCommand.CondSpec spec = McStockCommand.parseCondSpec("mcstock:nether_trade BELOW 15 close");
+        assertTrue(spec.ok());
+        assertEquals("nether_trade", spec.stockId());
+        assertEquals(1, spec.direction());
+        assertEquals(1_500L, spec.triggerCents());
+        assertEquals(2, spec.action());
+        assertEquals(1, spec.qty(), "省略数量 = 1");
+        assertEquals(1, spec.leverage(), "省略杠杆 = 1");
+    }
+
+    @Test
+    void rejectsMalformedConditionalSpecs() {
+        for (String raw : new String[]{"", "diamond_mine above", "diamond_mine above 100",
+                "gold_mine above 100 buy", "diamond_mine sideways 100 buy",
+                "diamond_mine above 100 hold", "diamond_mine above -1 buy",
+                "diamond_mine above 100 buy nope", "diamond_mine above 100 buy 1 2 3", null}) {
+            assertFalse(McStockCommand.parseCondSpec(raw).ok(), "「" + raw + "」不该被当成合法条件单");
+        }
+    }
+
     // ==================== 小工具 ====================
 
     private static void assertCoins(long expectedCents, String text) {

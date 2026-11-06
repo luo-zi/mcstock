@@ -1,6 +1,7 @@
 package com.qiushaonan.mcstock;
 
 import com.mojang.serialization.Codec;
+import com.qiushaonan.mcstock.market.ConditionalOrderSnapshot;
 import com.qiushaonan.mcstock.market.PortfolioSnapshot;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.neoforge.attachment.AttachmentType;
@@ -40,6 +41,20 @@ public class ModAttachments {
                     .serialize(PortfolioSnapshot.CODEC)
                     .copyOnDeath()
                     .build());
+
+    /**
+     * 条件单簿：一串「价格到线就替玩家执行一次交易」的挂单。
+     *
+     * <p>和持仓一样 {@code copyOnDeath()}：挂在交易所里的单不该因为摔死就消失。
+     * Codec 与畸形数据收口都放在 {@link ConditionalOrderSnapshot} / {@code ConditionalBook}
+     * 这两个纯 Java 类里，附件类不掺任何玩法逻辑。
+     */
+    public static final DeferredHolder<AttachmentType<?>, AttachmentType<ConditionalOrderSnapshot>> CONDITIONAL_ORDERS =
+            ATTACHMENT_TYPES.register("conditional_orders",
+                    () -> AttachmentType.builder(() -> ConditionalOrderSnapshot.EMPTY)
+                            .serialize(ConditionalOrderSnapshot.CODEC)
+                            .copyOnDeath()
+                            .build());
 
     public static void reg(IEventBus eventBus) {
         ATTACHMENT_TYPES.register(eventBus);

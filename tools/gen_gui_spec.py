@@ -176,6 +176,26 @@ def main() -> None:
         ("快捷栏 9 格", r(L["shopHotbar"]), wh(L["shopHotbar"]), "Slot 坐标"),
     ]))
 
+    p.append("### 3.4 条件单覆盖层（标题栏按钮打开，浮在内容区之上）\n")
+    p.append("这一层不与三页的块共享空间：打开时整块内容区被不透明底衬盖住，"
+             "只画下面这些矩形，行尾「撤」是纯绘制 + 命中判定（不是控件）。\n\n")
+    p.append(table([
+        ("标题栏「条件单」按钮", r(L["condBtn"]), wh(L["condBtn"]), "帮助按钮左边，与关闭/帮助按钮同一行"),
+        ("覆盖层外框", r(L["condPanel"]), wh(L["condPanel"]), "= 内容区整块；不透明底 + 1px 强调色边框"),
+        ("标题行", r(L["condTitle"]), wh(L["condTitle"]), "「条件单 · 挂单与撤单」"),
+        ("当前企业行", r(L["condInfo"]), wh(L["condInfo"]), "企业名 / 现价 / 数量 / 杠杆（后两项沿用行情页填写栏）"),
+        ("触发价填写栏", r(L["condTriggerField"]), wh(L["condTriggerField"]), "允许两位小数，金额按金币输入"),
+        ("方向切换", r(L["condDirBtn"]), wh(L["condDirBtn"]), "≥ 涨到 / ≤ 跌到，点一下切换"),
+        ("动作切换", r(L["condActionBtn"]), wh(L["condActionBtn"]), "买入开多 / 卖出开空 / 平掉全部仓"),
+        ("挂单按钮", r(L["condPlaceBtn"]), wh(L["condPlaceBtn"]), "只发「我填了什么」六个字段，服务端重算"),
+        ("说明行", r(L["condHelp"]), wh(L["condHelp"]), "每 2 秒跳价时判定，触发后按现价成交一次并移除"),
+        ("挂单列表", r(L["condList"]), wh(L["condList"]),
+         f"行高 {C['COND_ROW_H']}；本次能画 {L['condVisibleRows']} 行，滚轮翻页"),
+        ("↳ 第 1 行文字", r(L["condText0"]), wh(L["condText0"]), "让开行尾「撤」按钮，超宽裁尾"),
+        ("↳ 第 1 行「撤」", r(L["condCancelBtn0"]), wh(L["condCancelBtn0"]),
+         f"宽 {C['COND_CANCEL_W']}；点击发 C2SCancelConditionalOrder(id)"),
+    ]))
+
     p.append(f"## 4. 贴图纸分区（{C['ATLAS_W']} × {C['ATLAS_H']}）\n")
     p.append("| 分区 | u, v | w × h | 用途 |\n|---|---|---|---|\n" + "\n".join(
         f"| {name} | {s[0]}, {s[1]} | {s[2]} × {s[3]} | {SPRITE_PURPOSE.get(name, '')} |"

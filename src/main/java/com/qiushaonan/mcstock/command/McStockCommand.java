@@ -4,6 +4,8 @@ import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.context.CommandContext;
 import com.qiushaonan.mcstock.McStock;
+import com.qiushaonan.mcstock.market.ConditionalBook;
+import com.qiushaonan.mcstock.market.ConditionalOrder;
 import com.qiushaonan.mcstock.market.ItemValuator;
 import com.qiushaonan.mcstock.market.MarketEngine;
 import com.qiushaonan.mcstock.market.Portfolio;
@@ -40,6 +42,11 @@ import java.util.Locale;
  *   /mcstock advance                    立刻跳一次价（不用等 2 秒）
  *   /mcstock value [hand|held]          手持物品的估值 / 采购价 / 来源（种子值？标签值？推导值？）
  *   /mcstock positions                  自己的全部仓位（id/股票/多空/股数/均价/保证金/浮盈）
+ *   /mcstock cond [list]                 自己的全部条件单
+ *   /mcstock cond add &lt;股票&gt; &lt;above|below&gt; &lt;触发价&gt; &lt;buy|sell|close&gt; [数量] [杠杆]
+ *                                       挂一张条件单（价格按金币输入，允许两位小数）
+ *   /mcstock cond cancel &lt;id&gt;          撤掉一张条件单
+ *   /mcstock cond clear                  撤掉全部条件单
  * </pre>
  *
  * <h2>四条实现约定（改这个文件前先读）</h2>
@@ -79,6 +86,8 @@ public final class McStockCommand {
     private static final String ARG_AMOUNT = "amount";
     private static final String ARG_STOCK = "stock";
     private static final String ARG_PRICE = "price";
+    private static final String ARG_SPEC = "spec";
+    private static final String ARG_ID = "id";
 
     /** 注册 {@code /mcstock}。由 {@code StockEvents} 在 {@code RegisterCommandsEvent} 里调用。 */
     public static void register(CommandDispatcher<CommandSourceStack> dispatcher) {
@@ -108,7 +117,20 @@ public final class McStockCommand {
                         .then(Commands.literal("hand").executes(McStockCommand::showValue))
                         .then(Commands.literal("held").executes(McStockCommand::showValue)))
                 .then(Commands.literal("positions")
-                        .executes(McStockCommand::showPositions)));
+                        .executes(McStockCommand::showPositions))
+                // 条件单：整条 spec 用一个 greedyString 收，解析交给纯函数 parseCondSpec
+                // （Brigadier 的可选参数链会把这条命令写成六层嵌套，纯函数单测更好测）。
+                .then(Commands.literal("cond")
+                        .executes(McStockCommand::showConditionals)
+                        .then(Commands.literal("list").executes(McStockCommand::showConditionals))
+                        .then(Commands.literal("add")
+                                .then(Commands.argument(ARG_SPEC, StringArgumentType.greedyString())
+                                        .executes(McStockCommand::addConditional)))
+                        .then(Commands.literal("cancel")
+                                .then(Commands.argument(ARG_ID, StringArgumentType.word())
+                                        .executes(McStockCommand::cancelConditional)))
+                        .then(Commands.literal("clear")
+                                .executes(McStockCommand::clearConditionals))));
     }
 
     // ==================== 子命令：money ====================
@@ -194,6 +216,8 @@ public final class McStockCommand {
                 StockService.formatPrice(after), StockService.formatPrice(before)), false);
         ServerPlayer player = player(source);
         if (player != null) {
+            // 调试改价也是一次「价格推进」：条件单照常判定，不然验收时怎么设价都不触发
+            StockService.settleConditionalOrders(player, engine);
             refresh(player);
         }
         return 1;
@@ -212,6 +236,8 @@ public final class McStockCommand {
         sendPriceLines(source, engine);
         ServerPlayer player = player(source);
         if (player != null) {
+            // 手动跳价也算一次价格推进（正式玩法里这步在 StockService#onServerTick 做）
+            StockService.settleConditionalOrders(player, engine);
             refresh(player);
         }
         return 1;
@@ -301,6 +327,88 @@ public final class McStockCommand {
         return 1;
     }
 
+    // ==================== 子命令：cond（条件单） ====================
+
+    /** {@code /mcstock cond [list]}：一行一张，id 就是 {@code cond cancel <id>} 要用的句柄。 */
+    private static int showConditionals(CommandContext<CommandSourceStack> ctx) {
+        CommandSourceStack source = ctx.getSource();
+        ServerPlayer player = player(source);
+        if (player == null) {
+            return 0;
+        }
+        ConditionalBook book = StockService.conditionalBook(player);
+        if (book.isEmpty()) {
+            source.sendSuccess(() -> Component.translatable("message.mcstock.cmd.cond_empty"), false);
+            return 1;
+        }
+        source.sendSuccess(() -> Component.translatable("message.mcstock.cmd.cond_header",
+                Integer.toString(book.size()), Integer.toString(ConditionalBook.MAX_ORDERS)), false);
+        for (ConditionalOrder order : book.orders()) {
+            source.sendSuccess(() -> Component.translatable("message.mcstock.cmd.cond_line",
+                    Integer.toString(order.id()),
+                    Component.translatable(StockCatalog.nameKey(order.stock())),
+                    Component.translatable(ConditionalOrder.directionKey(order.direction())),
+                    StockService.formatPrice(order.triggerCents()),
+                    Component.translatable(ConditionalOrder.actionKey(order.action())),
+                    Integer.toString(order.qty()), Integer.toString(order.leverage())), false);
+        }
+        return 1;
+    }
+
+    /** {@code /mcstock cond add <spec>}：把纯函数解析出来的提示值交给服务端重算一遍。 */
+    private static int addConditional(CommandContext<CommandSourceStack> ctx) {
+        CommandSourceStack source = ctx.getSource();
+        String raw = StringArgumentType.getString(ctx, ARG_SPEC);
+        CondSpec spec = parseCondSpec(raw);
+        int stock = spec.ok() ? StockCatalog.indexOf(spec.stockId()) : -1;
+        if (!spec.ok() || stock < 0) {
+            source.sendFailure(Component.translatable("message.mcstock.cmd.cond_bad_spec", raw));
+            return 0;
+        }
+        ServerPlayer player = player(source);
+        if (player == null) {
+            return 0;
+        }
+        StockService.placeConditionalOrder(player, stock, spec.direction(), spec.triggerCents(),
+                spec.action(), spec.qty(), spec.leverage());
+        source.sendSuccess(() -> Component.translatable("message.mcstock.cmd.cond_added", raw), false);
+        return 1;
+    }
+
+    /** {@code /mcstock cond cancel <id>}：id 不是数字就当场报错，不让异常冒到命令分发器。 */
+    private static int cancelConditional(CommandContext<CommandSourceStack> ctx) {
+        CommandSourceStack source = ctx.getSource();
+        ServerPlayer player = player(source);
+        if (player == null) {
+            return 0;
+        }
+        String raw = StringArgumentType.getString(ctx, ARG_ID);
+        int id;
+        try {
+            id = Integer.parseInt(raw);
+        } catch (NumberFormatException e) {
+            source.sendFailure(Component.translatable("message.mcstock.cmd.cond_bad_id", raw));
+            return 0;
+        }
+        StockService.cancelConditionalOrder(player, id);
+        source.sendSuccess(() -> Component.translatable("message.mcstock.cmd.cond_cancelled", raw), false);
+        return 1;
+    }
+
+    /** {@code /mcstock cond clear}：一把撤掉自己的全部挂单。 */
+    private static int clearConditionals(CommandContext<CommandSourceStack> ctx) {
+        CommandSourceStack source = ctx.getSource();
+        ServerPlayer player = player(source);
+        if (player == null) {
+            return 0;
+        }
+        int count = StockService.conditionalBook(player).size();
+        StockService.clearConditionalOrders(player);
+        source.sendSuccess(() -> Component.translatable("message.mcstock.cmd.cond_cleared",
+                Integer.toString(count)), false);
+        return 1;
+    }
+
     // ==================== 参数解析（纯函数，单测覆盖） ====================
 
     /**
@@ -387,6 +495,71 @@ public final class McStockCommand {
             }
         }
         return null;
+    }
+
+    /**
+     * {@code /mcstock cond add} 的整条参数文本 → 条件单提示值（纯 Java，可单测）。
+     *
+     * <p>格式：{@code <股票> <above|below> <触发价> <buy|sell|close> [数量] [杠杆]}。
+     * 数量与杠杆省略时都是 1；触发价走 {@link #parseCoins}（金币、最多两位小数、必须为正）。
+     * 方向 / 动作存的是**枚举序号**（与网络包、存档同一个口径），下标查表留给
+     * {@link StockCatalog#indexOf(String)} —— 「id → 下标」全项目只有那一份实现。
+     *
+     * <p>⚠️ 这里只做**语法解析**，不做任何玩法校验：数值合法性、触发价区间、挂单上限
+     * 全部由服务端在 {@code StockService#placeConditionalOrder} 里重算（AGENTS.md 5.2）。
+     *
+     * @return {@code ok=false} 时调用方必须给提示，不要静默当成默认值
+     */
+    public static CondSpec parseCondSpec(String raw) {
+        if (raw == null) {
+            return CondSpec.BAD;
+        }
+        String text = raw.trim();
+        if (text.isEmpty()) {
+            return CondSpec.BAD;
+        }
+        String[] parts = text.split("\\s+");
+        if (parts.length < 4 || parts.length > 6) {
+            return CondSpec.BAD;
+        }
+        String stockId = parseStockId(parts[0]);
+        if (stockId == null) {
+            return CondSpec.BAD;
+        }
+        int direction = switch (parts[1].toLowerCase(Locale.ROOT)) {
+            case "above" -> 0;
+            case "below" -> 1;
+            default -> -1;
+        };
+        Coins price = parseCoins(parts[2]);
+        int action = switch (parts[3].toLowerCase(Locale.ROOT)) {
+            case "buy" -> 0;
+            case "sell" -> 1;
+            case "close" -> 2;
+            default -> -1;
+        };
+        if (direction < 0 || action < 0 || !price.ok() || price.cents() <= 0L) {
+            return CondSpec.BAD;
+        }
+        int qty = 1;
+        int leverage = 1;
+        try {
+            if (parts.length >= 5) {
+                qty = Integer.parseInt(parts[4]);
+            }
+            if (parts.length >= 6) {
+                leverage = Integer.parseInt(parts[5]);
+            }
+        } catch (NumberFormatException e) {
+            return CondSpec.BAD;
+        }
+        return new CondSpec(true, stockId, direction, price.cents(), action, qty, leverage);
+    }
+
+    /** {@link #parseCondSpec} 的结果：{@code ok=false} 表示「这条 spec 不是条件单」。 */
+    public record CondSpec(boolean ok, String stockId, int direction, long triggerCents,
+                           int action, int qty, int leverage) {
+        private static final CondSpec BAD = new CondSpec(false, null, 0, 0L, 0, 0, 0);
     }
 
     private static boolean isAsciiDigits(String s) {

@@ -532,6 +532,28 @@ public final class StockGuiLayout {
      */
     public static final int SHOP_HINT_MIN_H = 0;
 
+    // ---------- 条件单覆盖层（标题栏按钮打开，整块铺在内容区上） ----------
+    //
+    // ⚠️ 与帮助覆盖层同一层：两者都是**浮层**，不与三页的块共享空间，所以不参与行情页的
+    //    「两两不重叠」自检。所有矩形仍由 compute() 生成，绘制端只准从这里取（AGENTS.md 5.3）。
+    /** 标题栏「条件单」按钮宽度（3 个汉字 + 左右留白，高度与关闭/帮助按钮同为 {@link #CLOSE_SIZE}）。 */
+    public static final int COND_BTN_W = 44;
+    /** 覆盖层内边距（左右 / 上下）。 */
+    public static final int COND_PAD_X = 6;
+    public static final int COND_PAD_Y = 4;
+    /** 标题行 / 当前企业行 / 表单行 / 说明行的高度。 */
+    public static final int COND_TITLE_H = 14;
+    public static final int COND_INFO_H = 12;
+    public static final int COND_FORM_H = 20;
+    public static final int COND_HELP_H = 12;
+    /** 表单四块之间、表单与说明之间的间距。 */
+    public static final int COND_GAP = 3;
+    /** 挂单一行的高度，以及行尾「撤」按钮的宽度。 */
+    public static final int COND_ROW_H = 14;
+    public static final int COND_CANCEL_W = 20;
+    /** 一屏最多画几行（与 {@code ConditionalBook.MAX_ORDERS} 同一个数，这里写字面量是为了让布局工具能单独 javac 编译）。 */
+    public static final int COND_MAX_VISIBLE_ROWS = 8;
+
     // ==================== 圆角（柔和观感的关键） ====================
 
     /**
@@ -674,7 +696,11 @@ public final class StockGuiLayout {
             // 购买页（创造模式物品栏那种：上面网格点一下就拿，下面玩家背包）
             Rect catBtn, Rect searchBox, Rect prevBtn, Rect pageText, Rect nextBtn,
             Rect grid, Rect shopInvLabel, Rect shopInv, Rect shopHotbar, Rect shopHint,
-            int gridCols, int gridRows, int pageSize
+            int gridCols, int gridRows, int pageSize,
+            // 条件单覆盖层（浮层，compute() 里生成；绘制端一律用这里的矩形或下面几个取值方法）
+            Rect condBtn, Rect condPanel, Rect condTitle, Rect condInfo,
+            Rect condTriggerField, Rect condDirBtn, Rect condActionBtn, Rect condPlaceBtn,
+            Rect condHelp, Rect condList
     ) {
         /** 小屏幕上「资金情况」放不下 7 行，按可用高度决定画几行。 */
         public int fundsLines() {
@@ -874,10 +900,42 @@ public final class StockGuiLayout {
         public int indexLines() {
             return Math.max(0, Math.min(INDEX_LINES, indexBlock.h() / INDEX_LINE_H));
         }
+
+        // ---------- 条件单覆盖层的取值方法（绘制端不许自己算坐标） ----------
+
+        /** 挂单列表一屏能画几行；空间不够时可以为 0，绘制端要按 0 处理。 */
+        public int condVisibleRows() {
+            return Math.max(0, Math.min(COND_MAX_VISIBLE_ROWS, condList.h() / COND_ROW_H));
+        }
+
+        /** 第 {@code i} 行（当前这一屏的行号，不含滚动偏移）。 */
+        public Rect condRow(int i) {
+            return new Rect(condList.x(), condList.y() + i * COND_ROW_H,
+                    Math.max(0, condList.w()), COND_ROW_H);
+        }
+
+        /** 第 {@code i} 行文字的范围（让开行尾「撤」按钮，避免文字压到按钮上）。 */
+        public Rect condText(int i) {
+            Rect row = condRow(i);
+            return new Rect(row.x() + 2, row.y(),
+                    Math.max(0, row.w() - COND_CANCEL_W - 6), row.h());
+        }
+
+        /** 第 {@code i} 行行尾「撤」按钮的命中矩形（与画出来的框同一个矩形）。 */
+        public Rect condCancelBtn(int i) {
+            Rect row = condRow(i);
+            return new Rect(row.right() - COND_CANCEL_W - 1, row.y() + 1,
+                    COND_CANCEL_W, Math.max(0, row.h() - 2));
+        }
     }
 
     private static int clamp(int v, int lo, int hi) {
         return v < lo ? lo : (v > hi ? hi : v);
+    }
+
+    /** 覆盖层收口：从 {@code y} 到容器下沿 {@code bottom} 还剩多少高度就给多少（不足为 0）。 */
+    private static int clampHeight(int want, int y, int bottom) {
+        return Math.max(0, Math.min(want, bottom - y));
     }
 
     /**
@@ -1104,6 +1162,9 @@ public final class StockGuiLayout {
         // 帮助按钮在关闭按钮**左边**（同一行、同一尺寸、同一垂直内缩）
         Rect helpBtn = new Rect(closeBtn.x() - HELP_CLOSE_GAP - CLOSE_SIZE, closeBtn.y(),
                 CLOSE_SIZE, CLOSE_SIZE);
+        // 「条件单」按钮在帮助按钮**左边**（同一行、同一高度）；文字按钮比图标按钮宽
+        Rect condBtn = new Rect(helpBtn.x() - HELP_CLOSE_GAP - COND_BTN_W, closeBtn.y(),
+                COND_BTN_W, CLOSE_SIZE);
 
         int tabW = clamp(panelW / 6, TAB_MIN_W, TAB_MAX_W);
         int tabsW = tabW * 3 + TAB_GAP * 2;
@@ -1117,6 +1178,37 @@ public final class StockGuiLayout {
         int contentY = tabY + TAB_H + CONTENT_GAP;
         Rect content = new Rect(px + CONTENT_PAD, contentY, panelW - CONTENT_PAD * 2,
                 Math.max(40, py + panelH - CONTENT_BOTTOM_PAD - contentY));
+
+        // ---------- 条件单覆盖层（浮在内容区上，与三页不共享空间） ----------
+        //
+        // 纵向优先级：标题 > 当前企业 > 表单 > 说明 > 挂单列表。窗口极矮时按这个顺序
+        // 把高度让给列表，任何一块都不会伸出 condPanel（clampHeight 收口）。
+        Rect condPanel = new Rect(content.x(), content.y(), content.w(), content.h());
+        int condX = condPanel.x() + COND_PAD_X;
+        int condW = Math.max(0, condPanel.w() - COND_PAD_X * 2);
+        int condBottom = condPanel.bottom() - COND_PAD_Y;
+        int titleY = condPanel.y() + COND_PAD_Y;
+        Rect condTitle = new Rect(condX, titleY, condW,
+                clampHeight(COND_TITLE_H, titleY, condBottom));
+        int infoY = condTitle.bottom();
+        Rect condInfo = new Rect(condX, infoY, condW, clampHeight(COND_INFO_H, infoY, condBottom));
+        int formY = condInfo.bottom() + COND_GAP;
+        Rect condForm = new Rect(condX, formY, condW, clampHeight(COND_FORM_H, formY, condBottom));
+        // 表单按宽度分成四块：触发价填写栏 / 方向切换 / 动作切换 / 挂单按钮
+        int formAvail = Math.max(0, condForm.w() - COND_GAP * 3);
+        int triggerW = formAvail * 30 / 100;
+        int dirW = formAvail * 22 / 100;
+        int actionW = formAvail * 26 / 100;
+        int placeW = Math.max(0, formAvail - triggerW - dirW - actionW);
+        Rect condTriggerField = new Rect(condForm.x(), formY, triggerW, condForm.h());
+        Rect condDirBtn = new Rect(condTriggerField.right() + COND_GAP, formY, dirW, condForm.h());
+        Rect condActionBtn = new Rect(condDirBtn.right() + COND_GAP, formY, actionW, condForm.h());
+        Rect condPlaceBtn = new Rect(condActionBtn.right() + COND_GAP, formY, placeW, condForm.h());
+        int helpY = condForm.bottom() + COND_GAP;
+        Rect condHelp = new Rect(condX, helpY, condW, clampHeight(COND_HELP_H, helpY, condBottom));
+        int listY = condHelp.bottom() + COND_GAP;
+        int listTop = Math.min(listY, condBottom);
+        Rect condList = new Rect(condX, listTop, condW, Math.max(0, condBottom - listTop));
 
         // ---------- 行情页：左列卡片 / 中间大屏 / 右列操作 ----------
         // ⚠️ 纵向起点一律用 contentTop()（= content.y() + FLASH_BAND_H）：
@@ -1345,7 +1437,10 @@ public final class StockGuiLayout {
                 hint, bar, barInfo, recycleBtn, barDetail, invLabel, inv, hotbar,
                 catBtn, searchBox, prevBtn, pageText, nextBtn,
                 grid, shopInvLabel, shopInv, shopHotbar, shopHint,
-                gridCols, gridRows, gridCols * gridRows);
+                gridCols, gridRows, gridCols * gridRows,
+                condBtn, condPanel, condTitle, condInfo,
+                condTriggerField, condDirBtn, condActionBtn, condPlaceBtn,
+                condHelp, condList);
     }
 
     // ==================== 便捷取值（画的时候用） ====================

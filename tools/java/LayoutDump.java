@@ -158,6 +158,18 @@ public final class LayoutDump {
         add(c, "RADIUS_PANEL", StockGuiLayout.RADIUS_PANEL);
         add(c, "RADIUS_BOX", StockGuiLayout.RADIUS_BOX);
         add(c, "RADIUS_SLOT", StockGuiLayout.RADIUS_SLOT);
+        // 条件单覆盖层
+        add(c, "COND_BTN_W", StockGuiLayout.COND_BTN_W);
+        add(c, "COND_PAD_X", StockGuiLayout.COND_PAD_X);
+        add(c, "COND_PAD_Y", StockGuiLayout.COND_PAD_Y);
+        add(c, "COND_TITLE_H", StockGuiLayout.COND_TITLE_H);
+        add(c, "COND_INFO_H", StockGuiLayout.COND_INFO_H);
+        add(c, "COND_FORM_H", StockGuiLayout.COND_FORM_H);
+        add(c, "COND_HELP_H", StockGuiLayout.COND_HELP_H);
+        add(c, "COND_GAP", StockGuiLayout.COND_GAP);
+        add(c, "COND_ROW_H", StockGuiLayout.COND_ROW_H);
+        add(c, "COND_CANCEL_W", StockGuiLayout.COND_CANCEL_W);
+        add(c, "COND_MAX_VISIBLE_ROWS", StockGuiLayout.COND_MAX_VISIBLE_ROWS);
 
         // ---------------- 算出来的矩形 ----------------
         List<String> a = new ArrayList<>();
@@ -230,6 +242,21 @@ public final class LayoutDump {
         rect(a, "shopInv", l.shopInv());
         rect(a, "shopHotbar", l.shopHotbar());
         rect(a, "shopHint", l.shopHint());
+        // 条件单覆盖层（浮层，与三页的块不共享空间）
+        rect(a, "condBtn", l.condBtn());
+        rect(a, "condPanel", l.condPanel());
+        rect(a, "condTitle", l.condTitle());
+        rect(a, "condInfo", l.condInfo());
+        rect(a, "condTriggerField", l.condTriggerField());
+        rect(a, "condDirBtn", l.condDirBtn());
+        rect(a, "condActionBtn", l.condActionBtn());
+        rect(a, "condPlaceBtn", l.condPlaceBtn());
+        rect(a, "condHelp", l.condHelp());
+        rect(a, "condList", l.condList());
+        rect(a, "condRow0", l.condRow(0));
+        rect(a, "condText0", l.condText(0));
+        rect(a, "condCancelBtn0", l.condCancelBtn(0));
+        add(a, "condVisibleRows", l.condVisibleRows());
         add(a, "gridCols", l.gridCols());
         add(a, "gridRows", l.gridRows());
         add(a, "pageSize", l.pageSize());

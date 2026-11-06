@@ -64,6 +64,9 @@ DYNAMIC_REQUIRED = {
     "gui.mcstock.regime.bear.news", "gui.mcstock.regime.volatile.news",
     # 新闻条格式（StockScreen#tickerLine 里按变量传键）
     "gui.mcstock.news.format", "gui.mcstock.index.title",
+    # 条件单：方向 / 动作的语言键由 ConditionalOrder.directionKey / actionKey 按枚举拼出
+    "gui.mcstock.cond.dir.above", "gui.mcstock.cond.dir.below",
+    "gui.mcstock.cond.action.buy", "gui.mcstock.cond.action.sell", "gui.mcstock.cond.action.close",
 }
 
 

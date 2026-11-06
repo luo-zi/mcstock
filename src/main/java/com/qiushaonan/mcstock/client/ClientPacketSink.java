@@ -1,8 +1,11 @@
 package com.qiushaonan.mcstock.client;
 
+import com.qiushaonan.mcstock.market.ConditionalBook;
+import com.qiushaonan.mcstock.market.ConditionalOrder;
 import com.qiushaonan.mcstock.market.MarketRegime;
 import com.qiushaonan.mcstock.market.Position;
 import com.qiushaonan.mcstock.market.StockDefs;
+import com.qiushaonan.mcstock.network.S2CConditionalOrders;
 import com.qiushaonan.mcstock.network.S2CShopCatalog;
 import net.minecraft.resources.ResourceLocation;
 import com.qiushaonan.mcstock.network.S2CSlotValue;
@@ -29,6 +32,29 @@ public final class ClientPacketSink {
                 MarketRegime.byOrdinal(payload.regime()),
                 payload.news() == null ? new S2CStockSnapshot.NewsItem[0] : payload.news(),
                 payload.flash());
+    }
+
+    /**
+     * 条件单簿：**整份替换**（协议 v5）。
+     *
+     * <p>⚠️ 收包侧一律不抛：解码异常 / 畸形条目在客户端 = 直接掉线。这里把序号交给
+     * {@link ConditionalOrder#direction(int)} / {@link ConditionalOrder#action(int)} 兜底，越界股票与超过上限
+     * 的条目直接跳过，界面最多少显示几行。
+     */
+    public static void onConditionalOrders(S2CConditionalOrders payload) {
+        S2CConditionalOrders.View[] src = payload.orders() == null
+                ? new S2CConditionalOrders.View[0] : payload.orders();
+        java.util.List<ConditionalOrder> out = new java.util.ArrayList<>(src.length);
+        for (S2CConditionalOrders.View v : src) {
+            if (v == null || v.stock() < 0 || v.stock() >= StockDefs.COUNT
+                    || out.size() >= ConditionalBook.MAX_ORDERS) {
+                continue;
+            }
+            out.add(new ConditionalOrder(v.id(), v.stock(),
+                    ConditionalOrder.direction(v.direction()), v.triggerCents(),
+                    ConditionalOrder.action(v.action()), v.qty(), v.leverage()));
+        }
+        StockClientState.conditionalOrders = out.toArray(new ConditionalOrder[0]);
     }
 
     public static void onSlotValue(S2CSlotValue payload) {

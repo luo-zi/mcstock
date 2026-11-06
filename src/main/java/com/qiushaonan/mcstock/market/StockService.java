@@ -4,6 +4,7 @@ import com.qiushaonan.mcstock.ModAttachments;
 import com.qiushaonan.mcstock.items.ModItems;
 import com.qiushaonan.mcstock.menu.RecycleRules;
 import com.qiushaonan.mcstock.menu.StockMenu;
+import com.qiushaonan.mcstock.network.S2CConditionalOrders;
 import com.qiushaonan.mcstock.network.S2CShopCatalog;
 import com.qiushaonan.mcstock.network.S2CSlotValue;
 import com.qiushaonan.mcstock.network.S2CStockSnapshot;
@@ -82,6 +83,15 @@ public final class StockService {
         player.setData(ModAttachments.PORTFOLIO.get(), PortfolioSnapshot.of(portfolio));
     }
 
+    /** 玩家的条件单簿（从附件还原，畸形存档在 {@link ConditionalBook#restore} 里被收口）。 */
+    public static ConditionalBook conditionalBook(ServerPlayer player) {
+        return player.getData(ModAttachments.CONDITIONAL_ORDERS.get()).toBook();
+    }
+
+    public static void saveConditionalBook(ServerPlayer player, ConditionalBook book) {
+        player.setData(ModAttachments.CONDITIONAL_ORDERS.get(), book.snapshot());
+    }
+
     /** 净值 = 现金 + Σ(保证金 + 浮动盈亏)。 */
     public static long netWorth(ServerPlayer player, Portfolio portfolio, long[] prices) {
         return cash(player) + portfolio.totalMargin() + portfolio.totalPnl(prices);
@@ -119,9 +129,14 @@ public final class StockService {
         boolean advanced = market.engine().ticksToNext() <= 1;
         market.engine().tick();
         if (advanced) {
-            // 刚跳完价：先把该爆的仓位爆掉（顺带把爆仓提示写进这次的快照），再推最新行情
+            // 刚跳完价：① 先把该爆的仓位爆掉 → ② 再判定条件单（顺序要紧：爆仓会改现金与持仓，
+            // 条件单必须按「爆完之后的真实账户」成交）→ ③ 推最新行情 + 最新条件单簿
             for (ServerPlayer player : server.getPlayerList().getPlayers()) {
                 String flash = settleLiquidations(player, market.engine());
+                String condFlash = settleConditionalOrders(player, market.engine());
+                if (!condFlash.isEmpty()) {
+                    flash = condFlash;      // 触发是更晚、更主动的事件，提示以它为准
+                }
                 if (player.containerMenu instanceof StockMenu) {
                     sendSnapshot(player, flash, true);
                 }
@@ -179,6 +194,146 @@ public final class StockService {
             savePortfolio(player, portfolio);
         }
         return message;
+    }
+
+    // ==================== 条件单 ====================
+    //
+    // 纯数据（订单形状 / 触发判定 / 夹取）在 ConditionalOrder 与 ConditionalBook 里，能直接单测；
+    // 这里只做「读服务端账户 → 判定 → 按现价成交 → 记账 + 提示」这条 Minecraft 侧链路。
+    // 客户端发来的六个字段一律只当提示值（AGENTS.md 5.2）。
+
+    /**
+     * 挂一张条件单（{@code C2SPlaceConditionalOrder}）。
+     *
+     * <p>⚠️ 挂单**只登记条件，不冻结任何钱**：保证金与手续费在触发那一刻按当时的现价、
+     * 当时的余额检查（见 {@link #executeConditionalOrder}）。这样不引入「预留资金」这套第二账本，
+     * 也不会出现「挂了 8 张单之后余额看起来少了但没成交」的怪现象。
+     */
+    public static void placeConditionalOrder(ServerPlayer player, int stock, int directionOrdinal,
+                                              long triggerCents, int actionOrdinal,
+                                              int qty, int leverage) {
+        if (stock < 0 || stock >= StockDefs.COUNT || triggerCents <= 0L) {
+            flash(player, "message.mcstock.cond.bad");
+            sendSnapshot(player, "");
+            return;
+        }
+        ConditionalBook book = conditionalBook(player);
+        ConditionalOrder order = book.add(stock, directionOrdinal, triggerCents, actionOrdinal, qty, leverage);
+        if (order == null) {
+            flash(player, "message.mcstock.cond.full", ConditionalBook.MAX_ORDERS);
+            sendSnapshot(player, "");
+            return;
+        }
+        saveConditionalBook(player, book);
+        flash(player, "message.mcstock.cond.placed", order.id(),
+                Component.translatable(StockCatalog.nameKey(order.stock())),
+                order.direction() == ConditionalOrder.Direction.ABOVE ? "≥" : "≤",
+                formatPrice(order.triggerCents()),
+                Component.translatable(ConditionalOrder.actionKey(order.action())));
+        sendSnapshot(player, "");
+    }
+
+    /** 撤掉一张条件单（{@code C2SCancelConditionalOrder}）。 */
+    public static void cancelConditionalOrder(ServerPlayer player, int orderId) {
+        ConditionalBook book = conditionalBook(player);
+        if (book.cancel(orderId) == null) {
+            flash(player, "message.mcstock.cond.not_found", orderId);
+        } else {
+            saveConditionalBook(player, book);
+            flash(player, "message.mcstock.cond.cancelled", orderId);
+        }
+        sendSnapshot(player, "");
+    }
+
+    /** 撤掉全部条件单（调试命令 {@code /mcstock cond clear}）。 */
+    public static void clearConditionalOrders(ServerPlayer player) {
+        ConditionalBook book = conditionalBook(player);
+        int count = book.size();
+        book.clear();
+        saveConditionalBook(player, book);
+        flash(player, "message.mcstock.cond.cleared", count);
+        sendSnapshot(player, "");
+    }
+
+    /**
+     * 一次跳价之后：**判定并执行**所有到线的条件单。
+     *
+     * <p>⚠️ 只在价格真的推进过时调（{@link #onServerTick} 的 {@code advanced} 分支，
+     * 以及调试命令改价/跳价后），挂单当下不判定 —— 否则「挂单」就变成「市价单」了。
+     * 每张触发的单**无论成交与否都会摘掉**（一次性），避免余额不足时每 2 秒刷一次失败提示。
+     *
+     * @return 写给 GUI 提示行的文本（一张都没触发就是空串）
+     */
+    public static String settleConditionalOrders(ServerPlayer player, MarketEngine engine) {
+        ConditionalBook book = conditionalBook(player);
+        if (book.isEmpty()) {
+            return "";
+        }
+        long[] prices = engine.prices();
+        // due() 返回拷贝：下面会边遍历边从 book 里摘单，不能拿活视图改
+        List<ConditionalOrder> due = book.due(prices);
+        if (due.isEmpty()) {
+            return "";
+        }
+        String message = "";
+        for (ConditionalOrder order : due) {
+            book.cancel(order.id());
+            Component result = executeConditionalOrder(player, order, prices[order.stock()]);
+            message = flash(player, "message.mcstock.cond.triggered", order.id(),
+                    Component.translatable(StockCatalog.nameKey(order.stock())),
+                    formatPrice(prices[order.stock()]), result);
+        }
+        saveConditionalBook(player, book);
+        return message;
+    }
+
+    /**
+     * 按**跳价后的真实现价**执行一张已触发的单，并返回一行结果文案。
+     *
+     * <p>开仓走 {@link TradeService#open}（同一个手续费/保证金口径，绝不在这里另算一遍）；
+     * 全平走 {@link #closeAllAt}（与「平 仓」按钮共用的纯结算）。
+     */
+    private static Component executeConditionalOrder(ServerPlayer player, ConditionalOrder order, long price) {
+        Portfolio portfolio = portfolio(player);
+        switch (order.action()) {
+            case OPEN_LONG, OPEN_SHORT -> {
+                boolean buy = order.action() == ConditionalOrder.Action.OPEN_LONG;
+                TradeService.Outcome out = TradeService.open(cash(player), portfolio,
+                        order.stock(), price, order.qty(), order.leverage(), buy);
+                switch (out.status()) {
+                    case OPENED -> {
+                        setCash(player, out.cashCents());
+                        savePortfolio(player, portfolio);
+                        return Component.translatable("message.mcstock.cond.opened",
+                                Component.translatable(buy ? "gui.mcstock.btn.buy" : "gui.mcstock.btn.sell"),
+                                out.openedQty(), formatPrice(price));
+                    }
+                    case NO_CASH -> {
+                        return Component.translatable("message.mcstock.cond.no_cash",
+                                formatPrice(out.marginCents() + out.feeCents()));
+                    }
+                    case FULL -> {
+                        return Component.translatable("message.mcstock.cond.pos_full", Portfolio.MAX_POSITIONS);
+                    }
+                    default -> {
+                        return Component.translatable("message.mcstock.cond.failed");
+                    }
+                }
+            }
+            case CLOSE_ALL -> {
+                if (portfolio.forStock(order.stock()).isEmpty()) {
+                    return Component.translatable("message.mcstock.cond.no_position");
+                }
+                CloseAllResult closed = closeAllAt(cash(player), portfolio, order.stock(), price);
+                setCash(player, closed.cashCents());
+                savePortfolio(player, portfolio);
+                return Component.translatable("message.mcstock.cond.closed",
+                        closed.closedShares(), formatSigned(closed.realizedPnlCents()));
+            }
+            default -> {
+                return Component.translatable("message.mcstock.cond.failed");
+            }
+        }
     }
 
     // ==================== 背包口径（唯一的实现，别再各写一份） ====================
@@ -390,22 +545,35 @@ public final class StockService {
         }
         StockMarketData market = StockMarketData.get(player.serverLevel());
         long price = market.engine().price(stock);
-        long cash = cash(player);
-        int closedShares = 0;
-        long realized = 0;
-        for (Position position : mine) {
-            TradeService.Outcome out = TradeService.close(cash, portfolio, position.id(), price);
+        CloseAllResult result = closeAllAt(cash(player), portfolio, stock, price);
+        setCash(player, result.cashCents());
+        savePortfolio(player, portfolio);
+        sendSnapshot(player, flash(player, "message.mcstock.closed_all",
+                result.closedShares(), formatSigned(result.realizedPnlCents())));
+    }
+
+    /**
+     * 「平掉这只股票的全部仓」的**纯结算**（只改传入的 {@link Portfolio} + 返回新现金，不发提示、
+     * 不推包、不写附件）：市价「平 仓」按钮与条件单的 {@code CLOSE_ALL} 动作共用这一份实现，
+     * 免得两处各写一遍逐仓结算、以后手续费口径改漏一处。
+     */
+    private record CloseAllResult(long cashCents, int closedShares, long realizedPnlCents) {
+    }
+
+    private static CloseAllResult closeAllAt(long cashCents, Portfolio portfolio, int stock, long priceCents) {
+        long cash = cashCents;
+        int shares = 0;
+        long realized = 0L;
+        for (Position position : portfolio.forStock(stock)) {
+            TradeService.Outcome out = TradeService.close(cash, portfolio, position.id(), priceCents);
             if (out.status() != TradeService.Status.CLOSED) {
                 continue;
             }
             cash = out.cashCents();
-            closedShares += out.closedQty();
+            shares += out.closedQty();
             realized += out.realizedPnlCents();
         }
-        setCash(player, cash);
-        savePortfolio(player, portfolio);
-        sendSnapshot(player, flash(player, "message.mcstock.closed_all",
-                closedShares, formatSigned(realized)));
+        return new CloseAllResult(cash, shares, realized);
     }
 
     /**
@@ -608,10 +776,11 @@ public final class StockService {
      *                    每秒一次的倒计时推送靠这个把包从 3 KB 压到 ~0.8 KB。
      */
     public static void sendSnapshot(ServerPlayer player, String flashText, boolean withCandles) {
-        // 显式传了就用它；传空串时取「待发提示」（flash() 刚写进去的那条），取完即清
-        String pendingFlash = (flashText == null || flashText.isEmpty())
-                ? PENDING_FLASH.remove(player.getUUID())
-                : flashText;
+        // 显式传了就用它；传空串时取「待发提示」（flash() 刚写进去的那条）。
+        // ⚠️ 两种路径都 remove：显式那条本来就是刚才 flash() 存进来的同一段文本，
+        //    不清掉的话下一次 sendSnapshot(player, "") 会把这条旧提示再放出来一遍。
+        String pending = PENDING_FLASH.remove(player.getUUID());
+        String pendingFlash = (flashText == null || flashText.isEmpty()) ? pending : flashText;
         StockMarketData market = StockMarketData.get(player.serverLevel());
         MarketEngine engine = market.engine();
         Portfolio portfolio = portfolio(player);
@@ -670,10 +839,30 @@ public final class StockService {
                 engine.indexDeci(), engine.indexChangePermille(), engine.regime().ordinal(), news,
                 pendingFlash == null ? "" : pendingFlash);
         PacketDistributor.sendToPlayer(player, payload);
+        // 条件单簿整份替换：与快照同帧，客户端不会出现「价格是新的、挂单列表是旧的」半帧状态
+        sendConditionalOrders(player);
 
         if (player.containerMenu instanceof StockMenu menu) {
             PacketDistributor.sendToPlayer(player, slotValueOf(menu));
         }
+    }
+
+    /**
+     * 把玩家当前的条件单簿整份推过去（{@link S2CConditionalOrders}，最多 {@link ConditionalBook#MAX_ORDERS} 条）。
+     *
+     * <p>服务端只发**结构化字段**（下标 / 序号 / 分），语言键与文字全在客户端按自己的语言渲染 ——
+     * 与新闻流同一个理由（服务端语言常常是 en、客户端是 zh）。
+     */
+    private static void sendConditionalOrders(ServerPlayer player) {
+        List<ConditionalOrder> orders = conditionalBook(player).orders();
+        int n = Math.min(orders.size(), ConditionalBook.MAX_ORDERS);
+        S2CConditionalOrders.View[] views = new S2CConditionalOrders.View[n];
+        for (int i = 0; i < n; i++) {
+            ConditionalOrder o = orders.get(i);
+            views[i] = new S2CConditionalOrders.View(o.id(), o.stock(), o.direction().ordinal(),
+                    o.triggerCents(), o.action().ordinal(), o.qty(), o.leverage());
+        }
+        PacketDistributor.sendToPlayer(player, new S2CConditionalOrders(views));
     }
 
     /**

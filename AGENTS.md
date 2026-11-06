@@ -378,6 +378,30 @@ item.mcstock.<id>        gui.mcstock.<...>        message.mcstock.<...>
   四条策略（追事件 ×10 / 死多 ×400 / 每 10 跳往返 / 只回收）各自记账，断言只看方向与量级
   （实测数字直接打印在测试报告里）。**改任何经济常量都要重跑它。**
 
+### 5.10 条件单（2026-11-06 新增，协议 v5）
+
+- **一句话**：价格「涨到 / 跌到」某个价时，服务端替玩家执行一次**买入开多 / 卖出开空 / 平掉该股全部仓**。
+  纯逻辑在 `market/ConditionalOrder`（订单形状、触发判定、夹取）、`ConditionalBook`（增删改、上限、读档收口）、
+  `ConditionalOrderSnapshot`（Codec）里，三者都不依赖 Minecraft，单测直接跑真实实现（见 `ConditionalOrderTest`）。
+- **服务端权威**：`C2SPlaceConditionalOrder` 的六个字段全是提示值，`StockService#placeConditionalOrder`
+  重算股票下标 / 方向序号 / 触发价区间 / 数量 / 杠杆 / 挂单上限（每人 8 张）。撤单只发一个 id，
+  服务端重新查一遍自己的簿子。`S2CConditionalOrders` 跟着每次快照整份推给客户端（**单独一个包**，
+  不动 `S2CStockSnapshot` 那 16 个分量）；因为新增了三个载荷类型，`ModNetwork.PROTOCOL_VERSION` 从 4 升到 **5**。
+- **触发语义**（`ConditionalOrder` 类注释是唯一口径，别在别处另写一份）：
+  只在**价格推进**那一刻判定（正常每 2 秒一跳；`/mcstock advance`、`/mcstock price set` 也会判定），
+  含等号、按**跳价后的真实现价**成交、无论成败都**一次性移除**；挂单当下不判定、也不冻结资金。
+  每次跳价里先跑爆仓（`settleLiquidations`）再跑条件单（`settleConditionalOrders`），
+  保证触发时看到的是爆完之后的真实账户。开仓走 `TradeService.open`、全平走 `closeAllAt`
+  （与「平 仓」按钮共用的纯结算），手续费/保证金口径一处都不会漏改。
+- **存档**：玩家附件 `ModAttachments.CONDITIONAL_ORDERS`（`copyOnDeath`），发号器 `next_id` 跟着存，
+  `restore` 会丢畸形条目、去重、截断到 8 张；`clear` **不复位发号器**（避免延迟到达的撤单包打到新单上）。
+- **界面**：标题栏「条件单」按钮打开覆盖层（与帮助覆盖层互斥，浮在内容区之上）。矩形全部由
+  `StockGuiLayout.compute()` 生成并登记进 `Layout`/`LayoutDump.java`（规格书 3.4 节）。
+  行尾「撤」是纯绘制 + `mouseClicked` 命中判定，不是控件 —— 行数每帧都可能变。
+  数量 / 杠杆沿用行情页那两个填写栏，覆盖层里只多一个触发价填写栏。
+- **调试命令**：`/mcstock cond [list]`、`cond add <股票> <above|below> <价格> <buy|sell|close> [数量] [杠杆]`、
+  `cond cancel <id>`、`cond clear`。整条 spec 的解析是纯函数 `McStockCommand.parseCondSpec`（有单测）。
+
 ## 6. 已经踩过的坑与实现细节（别改回去）
 
 1. **`gradle.properties` 必须是纯 ASCII**：它由 `java.util.Properties` 以 ISO-8859-1 读取，
