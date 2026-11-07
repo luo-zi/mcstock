@@ -173,6 +173,20 @@ public final class ItemValuator {
             }
         }
 
+        // 劳动时间表的**锚**：数据包直接写了价的所有物品（物品种子 + 标签种子）。
+        // ⚠️ 不能直接用上面的 `seeded` —— 那只是**物品**种子。原木 / 羊毛 / 木板这些是
+        //    **标签**种子，价格同样由数据包拍板，可是它们不在 seeded 里。不锚住它们的后果：
+        //    它们会走配方推导、白白多付一份工序时间，于是「基础物资」的买价也被抬高 ——
+        //    而涨价只应该发生在深加工链上（见 LaborTime 类注释里「两条轨道共用同一个锚」）。
+        Set<ResourceLocation> anchored = new HashSet<>();
+        for (Map.Entry<ResourceLocation, Integer> priced : table.entrySet()) {
+            Origin origin = originTable.get(priced.getKey());
+            if (origin != null && (origin.source() == Source.ITEM_SEED
+                    || origin.source() == Source.TAG_SEED)) {
+                anchored.add(priced.getKey());
+            }
+        }
+
         // 排序：让每轮的遍历顺序固定，同一份数据包在任何机器上算出来的表都一样
         List<ResourceLocation> derived = new ArrayList<>();
         if (allItems != null) {
@@ -243,7 +257,7 @@ public final class ItemValuator {
         // ⚠️ 它在估值表**之后**算，因为种子价就是它的锚点；失败了也只是买价不加成，
         //    绝不影响上面那张回收价表（那条是防印钞机的地板，不能跟着一起塌）。
         try {
-            labor = LaborTime.compute(table, seeded, recipes, RecipeSteps::minutes);
+            labor = LaborTime.compute(table, anchored, recipes, RecipeSteps::minutes);
         } catch (Throwable e) {
             skipped++;
             labor = Map.of();

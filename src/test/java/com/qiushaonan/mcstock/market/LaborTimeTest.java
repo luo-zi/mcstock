@@ -49,7 +49,7 @@ class LaborTimeTest {
         Map<ResourceLocation, Double> time = LaborTime.compute(
                 Map.of(BASE, 60), Set.of(BASE),
                 Map.of(out, List.of(recipe(4, "minecraft:crafting_shaped", ing(2, BASE)))),
-                seconds -> 0);
+                type -> 0.1);
         assertEquals(0.6, time.get(out), 1e-9);
     }
 
@@ -62,7 +62,7 @@ class LaborTimeTest {
                 Map.of(BASE, 60), Set.of(BASE),
                 Map.of(one, List.of(recipe(1, "minecraft:crafting_shaped", ing(1, BASE))),
                         four, List.of(recipe(4, "minecraft:crafting_shaped", ing(1, BASE)))),
-                seconds -> 0);
+                type -> 0.5);
         assertEquals(1.0 + 0.5, time.get(one), 1e-9, "1 分钟材料 + 0.5 分钟工序");
         assertEquals(0.25 + 0.5, time.get(four), 1e-9, "材料被摊薄，工序不被摊薄");
     }
