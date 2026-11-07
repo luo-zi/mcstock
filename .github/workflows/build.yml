@@ -1,0 +1,80 @@
+name: Build mod jar
+
+# 目标：在干净的 Linux runner 上编译 + 跑完单测 + 产出可放进 mods/ 的 jar。
+# 任意分支 push（含功能分支）、PR 到 main、或手动触发都会构建；jar 作为 artifact 下载。
+# 想只构建某一个分支而不提交新 commit：gh workflow run "Build mod jar" --ref <branch>
+# （注意：该分支必须已经包含本文件，否则 GitHub 找不到这个 workflow，dispatch 会 404）。
+on:
+  # '**' = 所有分支（只匹配分支，不含 tag）；功能分支推送也会产出 jar。
+  push:
+    branches: ['**']
+  # PR 只对 main 构建：同仓库分支的推送已经有 push 构建，避免同一份代码跑两遍。
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# 同一分支连续推送时，取消还在跑的旧构建，省 runner 时间。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # 首次构建要下载 Gradle 9.2.1、Minecraft 1.21.1 与 NeoForge 21.1.234，留足时间。
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      # 缓存 Gradle wrapper 发行版、依赖与构建缓存；PR 只读缓存，不写回 main 的缓存。
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+
+      # gradlew 在仓库里的 mode 是 100644（Windows 提交），Linux runner 上必须先加执行位。
+      - name: Make gradlew executable
+        run: chmod +x gradlew
+
+      # clean 保证没有增量残留；build 里含 :test（JUnit Jupiter）与 :jar。
+      # gradle.properties 已指定 UTF-8，中文 mods.toml 模板不会乱码。
+      - name: Build and test
+        run: ./gradlew --no-daemon clean build --console=plain
+
+      # artifact 名不允许出现 /，而功能分支名带 /（feature/xxx），先换成 -。
+      - name: Compute artifact name
+        id: artifact
+        run: |
+          slug="${GITHUB_REF_NAME//\//-}"
+          echo "slug=$slug" >> "$GITHUB_OUTPUT"
+
+      # 产物是 build/libs/mcstock-<mod_version>.jar（archivesName = mod_id）。
+      - name: Upload mod jar
+        uses: actions/upload-artifact@v7
+        with:
+          name: mcstock-jar-${{ steps.artifact.outputs.slug }}-${{ github.sha }}
+          path: build/libs/*.jar
+          if-no-files-found: error
+          retention-days: 30
+
+      # 构建失败时把测试报告带出来，方便在网页上看是哪条用例挂了。
+      - name: Upload test reports on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-reports-${{ github.sha }}
+          path: |
+            build/reports/tests/test/**
+            build/test-results/test/**
+          if-no-files-found: ignore
