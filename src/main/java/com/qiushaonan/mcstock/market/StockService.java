@@ -803,9 +803,12 @@ public final class StockService {
             if (closest == null) {
                 flash(player, "message.mcstock.unlock.already");
             } else {
-                flash(player, "message.mcstock.unlock.short",
-                        new ItemStack(BuiltInRegistries.ITEM.get(closest.item())).getHoverName(),
-                        closest.have(), closest.need());
+                Item closestItem = BuiltInRegistries.ITEM.get(closest.item());
+                // 查不到就退回 id 字符串：这条路是玩家点一下就会走的，宁丑不抛
+                Component name = closestItem == null
+                        ? Component.literal(String.valueOf(closest.item()))
+                        : closestItem.getDescription();
+                flash(player, "message.mcstock.unlock.short", name, closest.have(), closest.need());
             }
             sendSnapshot(player, "");
             return;
@@ -834,7 +837,9 @@ public final class StockService {
         bar.setChanged();
 
         if (unlockedNow == 1 && lastName != null) {
-            flash(player, "message.mcstock.unlock.done_one", lastName.getHoverName());
+            // ⚠️ 1.21.1 里显示名在 ItemStack 上（{@code getHoverName()}），不在 Item 上 ——
+            //    这里用 {@code Item#getDescription()}，和 purchase 那条提示同一个口径
+            flash(player, "message.mcstock.unlock.done_one", lastName.getDescription());
         } else {
             flash(player, "message.mcstock.unlock.done", unlockedNow);
         }
