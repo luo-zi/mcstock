@@ -1,10 +1,14 @@
 name: Build mod jar
 
 # 目标：在干净的 Linux runner 上编译 + 跑完单测 + 产出可放进 mods/ 的 jar。
-# 每次 push 到 main、PR 到 main、或者手动触发都会构建；jar 作为 artifact 下载。
+# 任意分支 push（含功能分支）、PR 到 main、或手动触发都会构建；jar 作为 artifact 下载。
+# 想只构建某一个分支而不提交新 commit：gh workflow run "Build mod jar" --ref <branch>
+# （注意：该分支必须已经包含本文件，否则 GitHub 找不到这个 workflow，dispatch 会 404）。
 on:
+  # '**' = 所有分支（只匹配分支，不含 tag）；功能分支推送也会产出 jar。
   push:
-    branches: [main]
+    branches: ['**']
+  # PR 只对 main 构建：同仓库分支的推送已经有 push 构建，避免同一份代码跑两遍。
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -48,11 +52,18 @@ jobs:
       - name: Build and test
         run: ./gradlew --no-daemon clean build --console=plain
 
+      # artifact 名不允许出现 /，而功能分支名带 /（feature/xxx），先换成 -。
+      - name: Compute artifact name
+        id: artifact
+        run: |
+          slug="${GITHUB_REF_NAME//\//-}"
+          echo "slug=$slug" >> "$GITHUB_OUTPUT"
+
       # 产物是 build/libs/mcstock-<mod_version>.jar（archivesName = mod_id）。
       - name: Upload mod jar
         uses: actions/upload-artifact@v7
         with:
-          name: mcstock-jar-${{ github.sha }}
+          name: mcstock-jar-${{ steps.artifact.outputs.slug }}-${{ github.sha }}
           path: build/libs/*.jar
           if-no-files-found: error
           retention-days: 30
