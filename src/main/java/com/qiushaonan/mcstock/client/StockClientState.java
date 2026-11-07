@@ -62,15 +62,24 @@ public final class StockClientState {
     /**
      * 已解锁的物品 id（服务端推什么就是什么，**整份替换**）。
      *
-     * <p>客户端只用它做一件事：在购买页把「还没解锁」的贵物品置灰。
-     * 判定口径必须和服务端一致（{@code UnlockRules#requiresUnlock}）：
-     * <b>只有「推导价 ≥ 500 金币」的物品才上锁</b>，原版种子物品永远不上锁 ——
-     * 所以这里**不需要**知道哪个物品有种子价：客户端只要判断集合里有没有它即可，
-     * 「有没有种子价」这个判断只在服务端做（客户端拿不到 {@code ItemValuator} 的来源表）。
+     * <p>它装的是**交付过一组**的那批（{@code ModAttachments.UNLOCKED}）。
+     * 「玩够时间自动开放」那条路**不在这里**——它是算出来的
+     * （{@link #playSeconds} + 买价，见 {@code UnlockRules#isLocked}），
+     * 所以既不会撑大这个集合，也不需要任何存档迁移。
      */
     public static java.util.Set<ResourceLocation> unlocked = java.util.Set.of();
 
-    /** 这件物品解锁了吗（只对「需要上锁」的物品有意义，见 {@link #unlocked} 的注释）。 */
+    /**
+     * 这个玩家的**累计游戏时间**（秒），随解锁表一起推下来。
+     *
+     * <p>为什么客户端要它：解锁页要显示「这一项是现在就能交、还是得再等等」，
+     * 而「时间解锁」的判据只用得到「买价 + 游戏时间」这两个数 ——
+     * 价格在目录里、时间在这里，客户端就能和服务端算出**同一个结论**
+     * （两端调的是同一份 {@code UnlockRules#isLocked}）。
+     */
+    public static int playSeconds = 0;
+
+    /** 这件物品是不是「交付过一组」（只对需要上锁的物品有意义，见 {@link #unlocked}）。 */
     public static boolean isUnlocked(ResourceLocation id) {
         return id != null && unlocked.contains(id);
     }

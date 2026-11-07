@@ -63,7 +63,7 @@ public final class ClientPacketSink {
      *
      * <p>只做数据搬运：畸形条目（null / id 解析失败已经在解码侧丢掉）不会再进到这里。
      * 客户端不自己判断「这物品值不值得上锁」—— 那是服务端 {@code UnlockRules} 的事，
-     * 这里只保留「解锁过哪些」。
+     * 这里只保留「解锁过哪些」与「玩了多久」。
      */
     public static void onUnlocked(S2CUnlocked payload) {
         java.util.Set<ResourceLocation> set = new java.util.HashSet<>();
@@ -75,6 +75,8 @@ public final class ClientPacketSink {
             }
         }
         StockClientState.unlocked = java.util.Set.copyOf(set);
+        // 负数是畸形包：夹到 0（= 只走「交一组」那条路），别让界面算出「已经等够了」
+        StockClientState.playSeconds = Math.max(0, payload.playSeconds());
     }
 
     public static void onSlotValue(S2CSlotValue payload) {

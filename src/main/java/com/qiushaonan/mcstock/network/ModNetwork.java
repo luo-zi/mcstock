@@ -51,8 +51,12 @@ public final class ModNetwork {
      * <p>「5 → 6」的原因（解锁页）：新增 {@link C2SUnlock} / {@link S2CUnlocked} 两个载荷类型。
      * 同样是「载荷类型表变了」，旧客户端不认识 {@code mcstock:unlocked} 通道；
      * 已有的 {@link S2CShopCatalog} / {@link S2CStockSnapshot} 字段一个没动。
+     *
+     * <p>「6 → 7」的原因（时间解锁 + 采购冷却）：{@link S2CUnlocked} 头部追加了
+     * {@code playSeconds}（客户端要用它自己算「玩到买价 95% 就自动开放」）。
+     * 旧客户端会把那个 varint 当成「id 条数」读，整包错位 —— 必须换版本号。
      */
-    private static final String PROTOCOL_VERSION = "6";
+    private static final String PROTOCOL_VERSION = "7";
 
     private ModNetwork() {
     }

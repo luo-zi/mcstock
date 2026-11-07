@@ -42,6 +42,16 @@ public final class UnlockRules {
      */
     public static final int MIN_PRICE_TO_LOCK = 500;
 
+    /**
+     * 「等时间」这条路的系数：玩到这个物品劳动时间的 95%，它就自动开放。
+     *
+     * <p>为什么是 95% 而不是 100%：100% 会和「交一组解锁」这条路**恰好撞上**——
+     * 一个玩家攒够劳动时间的那一刻，他通常也已经攒够了一组能交的货。
+     * 留 5% 的缺口，是为了让「主动交付」永远比「干等」**早**一点点，
+     * 这样交付这条路才有意义（否则谁都会选干等，解锁页就成了摆设）。
+     */
+    public static final double TIME_LOCK_FRACTION = 0.95;
+
     private UnlockRules() {
     }
 
@@ -84,6 +94,50 @@ public final class UnlockRules {
      */
     public static boolean requiresUnlock(int purchasePrice, boolean seeded) {
         return !seeded && purchasePrice >= MIN_PRICE_TO_LOCK;
+    }
+
+    /**
+     * 这个物品现在是不是**还锁着**（服务端与客户端共用的唯一判据）。
+     *
+     * <p>三条路，任何一条成立就开：
+     * <ol>
+     *   <li>本来就不用解锁（有种子价的基础物资，或者便宜到不影响进度）；</li>
+     *   <li><b>交过一组</b>（{@code delivered}，存在 {@code ModAttachments.UNLOCKED} 里）；</li>
+     *   <li><b>玩够了它对应的劳动时间</b>（见 {@link #requiredPlaySeconds}）—— 这条路不需要存档，
+     *       是「算出来的」，所以老存档进来也立刻正确，不需要迁移。</li>
+     * </ol>
+     *
+     * <p>⚠️ 参数刻意全是从外部算好传进来的（价格、是否种子、是否交付过、游戏时间），
+     * 本方法**不碰玩家对象、不碰估值器**：这样服务端与客户端可以调同一份判定，
+     * 不会出现「界面说能买、服务端说不能」的错位。
+     *
+     * @param purchasePrice 采购价（金币）；{@code <= 0} 视为不用解锁
+     * @param seeded        价格是不是数据包直接写的
+     * @param delivered     这个玩家是不是已经交过一组
+     * @param playSeconds   这个玩家的**累计游戏时间**（秒）
+     */
+    public static boolean isLocked(int purchasePrice, boolean seeded, boolean delivered, long playSeconds) {
+        if (!requiresUnlock(purchasePrice, seeded) || delivered) {
+            return false;
+        }
+        return playSeconds < requiredPlaySeconds(purchasePrice);
+    }
+
+    /**
+     * 一个物品要玩多久（**秒**）才自动开放 = 采购价的 95%。
+     *
+     * <p>为什么直接用价格：1 金币 = 1 秒劳动（{@link ItemValuator#cooldownSeconds} 里那条换算），
+     * 所以「价格对应的劳动时间」就是价格本身，不需要第二套标定。
+     * 一件 3000 金币的物品要 2850 秒 ≈ 48 分钟游戏时间；
+     * 一件 6000 金币的要近 1.6 小时。**回报越贵的东西，等得越久**，这是这条机制的全部内容。
+     *
+     * @return 秒；{@code purchasePrice <= 0} 返回 0
+     */
+    public static long requiredPlaySeconds(int purchasePrice) {
+        if (purchasePrice <= 0) {
+            return 0;
+        }
+        return (long) Math.ceil(purchasePrice * TIME_LOCK_FRACTION);
     }
 
     /**

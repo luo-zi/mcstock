@@ -42,6 +42,7 @@ import java.util.Locale;
  *   /mcstock advance                    立刻跳一次价（不用等 2 秒）
  *   /mcstock value [hand|held]          手持物品的估值 / 采购价 / 来源（种子值？标签值？推导值？）
  *   /mcstock positions                  自己的全部仓位（id/股票/多空/股数/均价/保证金/浮盈）
+ *   /mcstock audit [数量]                采购价最高的前 N 件（回收价 / 买价 / 劳动时间 / 冷却）
  *   /mcstock cond [list]                 自己的全部条件单
  *   /mcstock cond add &lt;股票&gt; &lt;above|below&gt; &lt;触发价&gt; &lt;buy|sell|close&gt; [数量] [杠杆]
  *                                       挂一张条件单（价格按金币输入，允许两位小数）
@@ -88,6 +89,11 @@ public final class McStockCommand {
     private static final String ARG_PRICE = "price";
     private static final String ARG_SPEC = "spec";
     private static final String ARG_ID = "id";
+    private static final String ARG_COUNT = "count";
+
+    /** {@code /mcstock audit} 默认打几行；上限防刷屏（一张表 7 千多条，全打会淹没聊天栏）。 */
+    private static final int AUDIT_DEFAULT = 15;
+    private static final int AUDIT_MAX = 50;
 
     /** 注册 {@code /mcstock}。由 {@code StockEvents} 在 {@code RegisterCommandsEvent} 里调用。 */
     public static void register(CommandDispatcher<CommandSourceStack> dispatcher) {
@@ -118,6 +124,14 @@ public final class McStockCommand {
                         .then(Commands.literal("held").executes(McStockCommand::showValue)))
                 .then(Commands.literal("positions")
                         .executes(McStockCommand::showPositions))
+                .then(Commands.literal("audit")
+                        .executes(ctx -> audit(ctx, AUDIT_DEFAULT))
+                        .then(Commands.argument(ARG_COUNT,
+                                        com.mojang.brigadier.arguments.IntegerArgumentType
+                                                .integer(1, AUDIT_MAX))
+                                .executes(ctx -> audit(ctx,
+                                        com.mojang.brigadier.arguments.IntegerArgumentType
+                                                .getInteger(ctx, ARG_COUNT)))))
                 // 条件单：整条 spec 用一个 greedyString 收，解析交给纯函数 parseCondSpec
                 // （Brigadier 的可选参数链会把这条命令写成六层嵌套，纯函数单测更好测）。
                 .then(Commands.literal("cond")
@@ -270,7 +284,57 @@ public final class McStockCommand {
         source.sendSuccess(() -> Component.translatable("message.mcstock.cmd.value",
                 stack.getHoverName(), id.toString(),
                 Integer.toString(value), Integer.toString(purchase), origin), false);
+        // 两条轨道分开看：回收价（材料成本）与买价（可能是劳动时间顶上去的）差很远时，
+        // 这第二行是唯一能看出「为什么这么贵」的地方（和 audit 共用同一行文案）
+        sendPricingDetail(source, id, value, purchase);
         return 1;
+    }
+
+    /**
+     * {@code /mcstock audit [数量]}：**采购价最高的前 N 件**，一行一件。
+     *
+     * <p>为什么需要它：买价现在有两条轨道（材料价 / 劳动时间），整合包里到底哪些物品被
+     * 顶到了什么价位、工序步长调得合不合适，光看数据包是看不出来的 ——
+     * 只能反过来问估值器。这也是调 {@code recipe_steps} 那份数据包的唯一依据：
+     * 改一个数字、跑一次 audit、看末端物品的价格是不是落在了想要的区间。
+     *
+     * <p>按买价降序而不是按 id：要看的正是「被顶得最高的那批」。
+     */
+    private static int audit(CommandContext<CommandSourceStack> ctx, int limit) {
+        CommandSourceStack source = ctx.getSource();
+        java.util.Map<ResourceLocation, Integer> table = ItemValuator.snapshot();
+        if (table.isEmpty()) {
+            source.sendFailure(Component.translatable("message.mcstock.cmd.audit_empty"));
+            return 0;
+        }
+        java.util.List<ResourceLocation> ids = new java.util.ArrayList<>(table.keySet());
+        ids.sort((a, b) -> Integer.compare(ItemValuator.purchasePrice(b), ItemValuator.purchasePrice(a)));
+        int n = Math.min(limit, ids.size());
+        source.sendSuccess(() -> Component.translatable("message.mcstock.cmd.audit_header",
+                Integer.toString(n), Integer.toString(ids.size())), false);
+        for (int i = 0; i < n; i++) {
+            ResourceLocation id = ids.get(i);
+            sendPricingDetail(source, id, ItemValuator.value(id), ItemValuator.purchasePrice(id));
+        }
+        return 1;
+    }
+
+    /**
+     * 一行「回收 X / 买 Y / 劳动 Z 分 / 冷却 W」——{@code value} 与 {@code audit} 共用。
+     *
+     * <p>冷却用「分」还是「秒」按大小自动选：一件 8000 金币的物品写「8000 秒」没人看得懂，
+     * 一件 3 金币的写「0 分」又像是没有冷却。
+     */
+    private static void sendPricingDetail(CommandSourceStack source, ResourceLocation id,
+                                          int value, int purchase) {
+        double minutes = ItemValuator.laborMinutes(id);
+        int cooldown = ItemValuator.cooldownSeconds(purchase);
+        String labor = String.format(Locale.ROOT, "%.1f", minutes);
+        String cd = cooldown >= 60
+                ? (cooldown / 60) + "分"
+                : cooldown + "秒";
+        source.sendSuccess(() -> Component.translatable("message.mcstock.cmd.audit_line",
+                id.toString(), Integer.toString(value), Integer.toString(purchase), labor, cd), false);
     }
 
     /** 来源明细 → 一行文字（物品种子 / 标签种子 / 配方推导 / 无来源）。 */

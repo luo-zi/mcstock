@@ -128,4 +128,48 @@ class UnlockRulesTest {
         assertEquals(keys, c.keySet(), "计划只是只读统计，绝不该改动投放区的账");
         assertEquals(64, c.get(id("a")));
     }
+
+    // ==================== 时间解锁（第二条路） ====================
+
+    /**
+     * 时间解锁的门槛 = 买价的 95%（1 金币 = 1 秒劳动）。
+     *
+     * <p>为什么是 95%：留 5% 的缺口，让「主动交付一组」永远比「干等」早一点 ——
+     * 否则谁都会选干等，解锁页就成了摆设。
+     */
+    @Test
+    void timeLockIsNinetyFivePercentOfThePrice() {
+        assertEquals(950L, UnlockRules.requiredPlaySeconds(1000));
+        assertEquals(0L, UnlockRules.requiredPlaySeconds(0), "不可购买的东西没有时间门槛");
+        assertEquals(0L, UnlockRules.requiredPlaySeconds(-100), "负价不能算出负数门槛");
+        // 一件 3000 金币的后期物品 ≈ 47.5 分钟游戏时间
+        assertEquals(2850L, UnlockRules.requiredPlaySeconds(3000));
+    }
+
+    @Test
+    void lockedUntilEitherDeliveredOrOldEnough() {
+        int price = 3000;
+        long need = UnlockRules.requiredPlaySeconds(price);
+        // 1) 刚开始玩、没交过 → 锁着
+        assertTrue(UnlockRules.isLocked(price, false, false, 0));
+        assertTrue(UnlockRules.isLocked(price, false, false, need - 1), "差一秒都还锁着");
+        // 2) 玩够了 → 自动开，不需要任何存档
+        assertFalse(UnlockRules.isLocked(price, false, false, need));
+        assertFalse(UnlockRules.isLocked(price, false, false, need + 86400));
+        // 3) 交过一组 → 立刻开，和新号老号无关
+        assertFalse(UnlockRules.isLocked(price, false, true, 0));
+        // 4) 本来就不用解锁的两档：种子价、便宜货 —— 价格/时间都不参与
+        assertFalse(UnlockRules.isLocked(price, true, false, 0));
+        assertFalse(UnlockRules.isLocked(UnlockRules.MIN_PRICE_TO_LOCK - 1, false, false, 0));
+    }
+
+    /**
+     * 边界：买价不到门槛时，时间门槛也不该把新号挡住 ——
+     * {@code isLocked} 先看 {@code requiresUnlock}，所以便宜物品的 playSeconds 完全不参与。
+     */
+    @Test
+    void cheapItemsAreNeverTimeLockedEvenForBrandNewPlayers() {
+        int cheap = UnlockRules.MIN_PRICE_TO_LOCK - 1;
+        assertFalse(UnlockRules.isLocked(cheap, false, false, 0));
+    }
 }

@@ -82,7 +82,33 @@ public class ModAttachments {
                             .copyOnDeath()
                             .build());
 
+    /** 「物品 → 上次买它的游戏时刻（tick）」这张表的 Codec（读回来重新装成不可变 Map）。 */
+    private static final Codec<java.util.Map<ResourceLocation, Long>> COOLDOWN_CODEC =
+            Codec.unboundedMap(ResourceLocation.CODEC, Codec.LONG)
+                    .xmap(map -> java.util.Map.copyOf(map), map -> map);
+
+    /**
+     * 采购冷却：物品 id → 上次买它的**游戏时刻**（{@code level.getGameTime()}，单位 tick）。
+     *
+     * <p>为什么需要它：一件越贵的东西越不该被连着买 —— 冷却时长由买价推出来
+     * （{@link com.qiushaonan.mcstock.market.ItemValuator#cooldownSeconds}），
+     * 所以这里只存「什么时候买的」，时长每次现算，改价格不用迁移存档。
+     *
+     * <p>⚠️ <b>只记要冷却的那些</b>（时长 ≥ 1 分钟）：便宜物品的冷却等于没有，
+     * 记进来只会让这张表无谓地长大。写入时顺手清掉已经过期的条目，
+     * 所以表的规模是「最近买过的高价物品数」，稳定在几十条。
+     *
+     * <p>{@code copyOnDeath()}：冷却不该因为摔死就清零（那是拿命刷冷却）。
+     */
+    public static final DeferredHolder<AttachmentType<?>, AttachmentType<java.util.Map<ResourceLocation, Long>>> PURCHASE_COOLDOWN =
+            ATTACHMENT_TYPES.register("purchase_cooldown",
+                    () -> AttachmentType.builder(() -> java.util.Map.<ResourceLocation, Long>of())
+                            .serialize(COOLDOWN_CODEC)
+                            .copyOnDeath()
+                            .build());
+
     public static void reg(IEventBus eventBus) {
         ATTACHMENT_TYPES.register(eventBus);
     }
 }
+

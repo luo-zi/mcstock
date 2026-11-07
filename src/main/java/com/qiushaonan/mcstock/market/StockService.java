@@ -726,13 +726,10 @@ public final class StockService {
     /**
      * 这个物品**现在能不能买**（在价格合法之后、扣钱之前的最后一道门）。
      *
-     * <p>口径全部由 {@link UnlockRules#requiresUnlock} 决定：
-     * <ul>
-     *   <li>数据包写了价的原版物品 → 永远解锁（它们是购买页的基础物资，也是兑换尺度的锚）；</li>
-     *   <li>推导价 &lt; 500 金币的模组物品 → 不上锁（买了也不构成「跳级」）；</li>
-     *   <li>其余 → 必须在这个玩家的已解锁集合里。</li>
-     * </ul>
-     * ⚠️ 估值表整个没建起来时 {@link ItemValuator#origin} 一律返回 {@code NONE}，
+     * <p>口径全部交给 {@link UnlockRules#isLocked}（服务端与客户端共用那一份），
+     * 这里只负责把四个输入凑出来：买价、是否种子价、是否交付过一组、玩家累计游戏时间。
+     *
+     * <p>⚠️ 估值表整个没建起来时 {@link ItemValuator#origin} 一律返回 {@code NONE}，
      * 那会被判成「不是种子 → 要解锁」。所以价格 &lt;= 0 的情况必须在调用方就被挡掉
      * （{@code requiresUnlock} 对 0 价返回 {@code false}，这里再挡一次也不会误封）。
      */
@@ -744,7 +741,24 @@ public final class StockService {
         ItemValuator.Origin origin = ItemValuator.origin(id);
         boolean seeded = origin.source() == ItemValuator.Source.ITEM_SEED
                 || origin.source() == ItemValuator.Source.TAG_SEED;
-        return !UnlockRules.requiresUnlock(price, seeded) || unlocked(player).contains(id);
+        return !UnlockRules.isLocked(price, seeded, unlocked(player).contains(id), playSeconds(player));
+    }
+
+    /**
+     * 这个玩家**累计玩了多少秒**（原版统计 {@code play_time}，单位 tick，÷20 得秒）。
+     *
+     * <p>为什么不看存档年龄 / 世界时间：那两条会把「服务器挂机」和「玩家真在玩」混为一谈，
+     * 也会让后进服的玩家凭空占到便宜。原版统计是**按玩家**计的，
+     * 而且死亡、换维度、重进都不会重置 —— 它就是「你在这个世界里真正投入的时间」。
+     */
+    public static long playSeconds(ServerPlayer player) {
+        try {
+            return player.getStats()
+                    .getValue(net.minecraft.stats.Stats.CUSTOM.get(net.minecraft.stats.Stats.PLAY_TIME)) / 20L;
+        } catch (Throwable e) {
+            // 统计没准备好（极早期登录 / 别的模组清了统计）：按 0 处理 = 只走「交一组」那条路
+            return 0;
+        }
     }
 
     /**
@@ -888,12 +902,84 @@ public final class StockService {
     public static void sendUnlocked(ServerPlayer player) {
         java.util.Set<ResourceLocation> set = unlocked(player);
         PacketDistributor.sendToPlayer(player, new com.qiushaonan.mcstock.network.S2CUnlocked(
-                List.copyOf(set)));
+                List.copyOf(set), (int) Math.min(Integer.MAX_VALUE, playSeconds(player))));
+    }
+
+    // ==================== 采购冷却 ====================
+
+    /**
+     * 冷却时长的唯一来源：{@link ItemValuator#cooldownSeconds}（= 买价 ÷ 60 分钟）。
+     *
+     * <p>⚠️ 时长**不落盘**，只存「上次买的时刻」—— 这样调价（或数据包改了种子）之后
+     * 冷却自动跟着变，不需要写任何存档迁移。
+     */
+    private static long cooldownTicks(int purchasePrice) {
+        return ItemValuator.cooldownSeconds(purchasePrice) * 20L;
+    }
+
+    /** 还要等多少秒（向上取整；冷却好了返回 0，给提示文案用）。 */
+    public static long cooldownRemainingSeconds(ServerPlayer player, ResourceLocation id, int purchasePrice) {
+        long need = cooldownTicks(purchasePrice);
+        if (need <= 0 || id == null) {
+            return 0;
+        }
+        Map<ResourceLocation, Long> table = player.getData(ModAttachments.PURCHASE_COOLDOWN.get());
+        Long last = table == null || table.isEmpty() ? null : table.get(id);
+        if (last == null) {
+            return 0;
+        }
+        long left = need - (player.level().getGameTime() - last);
+        return left <= 0 ? 0 : (left + 19) / 20;
+    }
+
+    /**
+     * 「还要等多少分钟」→ 提示文案里的整数（向上取整，至少 1）。
+     *
+     * <p>只报分钟不报秒：这些等待都是分钟到小时级别，报秒只会刷一串没人看的精度；
+     * 而「0 秒」那种写法会让玩家以为已经好了。
+     */
+    private static String waitMinutes(long seconds) {
+        return Long.toString(Math.max(1, (Math.max(0, seconds) + 59) / 60));
+    }
+
+    /**
+     * 记一次「买了」。
+     *
+     * <p>⚠️ 整份替换（附件是 copyOnDeath 的，序列化拿到的必须是一份稳定快照）；
+     * 顺手把**已经过期的条目**删掉，否则这张表会随着玩家买过的东西种类一起无限长。
+     */
+    private static void markPurchase(ServerPlayer player, ResourceLocation id, int purchasePrice) {
+        if (id == null || cooldownTicks(purchasePrice) <= 0) {
+            return;
+        }
+        long now = player.level().getGameTime();
+        Map<ResourceLocation, Long> old = player.getData(ModAttachments.PURCHASE_COOLDOWN.get());
+        Map<ResourceLocation, Long> next = new java.util.HashMap<>();
+        if (old != null) {
+            for (Map.Entry<ResourceLocation, Long> entry : old.entrySet()) {
+                if (entry.getKey() == null || entry.getValue() == null) {
+                    continue;
+                }
+                // 过期判据用「现在的买价」：价格变了就该按新时长重判，宁可多留一条也别提前删
+                if (now - entry.getValue() < cooldownTicks(ItemValuator.purchasePrice(entry.getKey()))) {
+                    next.put(entry.getKey(), entry.getValue());
+                }
+            }
+        }
+        next.put(id, now);
+        player.setData(ModAttachments.PURCHASE_COOLDOWN.get(), Map.copyOf(next));
     }
 
     // ==================== 购买 ====================
 
-    /** 购买：价格 = 估价 × 1.18，物品直接进背包（塞不下掉脚下）。{@code count <= 0} 表示一组。 */
+    /**
+     * 购买：单价 = {@link ItemValuator#purchasePrice}（{@code max(材料价 × 1.18, 劳动时间 × 60)}），
+     * 物品直接进背包（塞不下掉脚下）。{@code count <= 0} 表示一组。
+     *
+     * <p>四道门，顺序**不许调换**：能不能买（物品存在）→ 有没有价（估值可用）→
+     * 解没解锁 → 冷没冷却 → 钱够不够。前四道都在扣钱之前，
+     * 这样玩家不会「去赚钱回来发现还是买不了」。
+     */
     public static void purchase(ServerPlayer player, ResourceLocation itemId, int count) {
         Item item = BuiltInRegistries.ITEM.get(itemId);
         long unit0 = ItemValuator.purchasePrice(itemId);
@@ -919,7 +1005,18 @@ public final class StockService {
         // ⚠️ 解锁门在**扣钱之前**：先判资格再判余额 —— 不然玩家会看到「余额不足」，
         //    去赚钱回来还是买不了，白跑一趟（这条顺序是有意的，别对调）。
         if (!isUnlocked(player, itemId)) {
-            flash(player, "message.mcstock.unlock.locked", item.getDescription());
+            // 两条路都告诉玩家：交付一组（快），或者干等到自己的游戏时间够（慢但确定）。
+            // 报「还要等多久」而不是只说「没解锁」—— 否则玩家会以为这条路是死胡同。
+            long need = UnlockRules.requiredPlaySeconds(unit) - playSeconds(player);
+            flash(player, "message.mcstock.unlock.locked", item.getDescription(), waitMinutes(need));
+            sendSnapshot(player, "");
+            return;
+        }
+        // 冷却门：越贵的东西买得越少（时长 = 买价 ÷ 60 分钟）。同样排在余额之前 ——
+        // 先判「你能不能买」再判「钱够不够」，和上面那条同一个理由。
+        long wait = cooldownRemainingSeconds(player, itemId, unit);
+        if (wait > 0) {
+            flash(player, "message.mcstock.purchase_cooldown", item.getDescription(), waitMinutes(wait));
             sendSnapshot(player, "");
             return;
         }
@@ -938,6 +1035,7 @@ public final class StockService {
             total = price * want;
         }
         setCash(player, money - total);
+        markPurchase(player, itemId, unit);
 
         ItemStack stack = new ItemStack(item, want);
         int left = stack.getCount();

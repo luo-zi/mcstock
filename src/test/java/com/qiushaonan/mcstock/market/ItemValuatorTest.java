@@ -146,32 +146,57 @@ class ItemValuatorTest {
 
     @Test
     @Order(5)
-    void purchasePriceIsCeilOfValueTimesMarkup() {
+    void purchasePriceIsTheHigherOfMaterialAndLabor() {
         rebuild();
         for (ResourceLocation item : ALL_ITEMS) {
             int value = ItemValuator.value(item);
-            int expected = value <= 0 ? 0 : (int) Math.ceil(value * ItemValuator.PURCHASE_MARKUP);
-            assertEquals(expected, ItemValuator.purchasePrice(item), item + " 的采购价 = ceil(估价 × 1.18)");
+            if (value <= 0) {
+                assertEquals(0, ItemValuator.purchasePrice(item), item + " 不可购买");
+                continue;
+            }
+            int byMaterial = (int) Math.ceil(value * ItemValuator.PURCHASE_MARKUP);
+            int byLabor = (int) Math.ceil(ItemValuator.laborMinutes(item) * LaborTime.COINS_PER_MINUTE);
+            assertEquals(Math.max(byMaterial, byLabor), ItemValuator.purchasePrice(item),
+                    item + " 的采购价 = max(材料价 × 1.18, 劳动时间 × 60)");
         }
         // 钉几个具体数字：向上取整，不是四舍五入（40 × 1.18 = 47.2 → 48，不能因为浮点误差变成 47 或 49）
         // ⚠️ 倍率历史：1.15（原版）→ 1.25（2026-10-06 收紧）→ 1.18（同日回调），这三个数跟着变
         assertEquals(48, ItemValuator.purchasePrice(DIAMOND));
-        assertEquals(8, ItemValuator.purchasePrice(IRON_INGOT));   // 估价 6 → 6 × 1.18 = 7.08 → 8
+        assertEquals(8, ItemValuator.purchasePrice(IRON_INGOT));   // 估价 6 → max(8, 6) = 8
         assertEquals(142, ItemValuator.purchasePrice(DIAMOND_PICKAXE));   // 估价 120 → 141.6 → 142
+    }
+
+    /**
+     * 种子的劳动时间就是「估价 ÷ 60」—— 1 金币 = 1 秒劳动，这是整套买价的锚。
+     *
+     * <p>这条钉住的是**两条轨道共用同一个锚**：种子物品的买价仍然是材料价 × 1.18
+     * （因为 {@code value/60 × 60 = value < 1.18 × value}），
+     * 所以劳动时间那条轨道**不会**把基础物资也一起抬高 —— 涨价只发生在推导出来的深链上。
+     */
+    @Test
+    @Order(6)
+    void seededLaborMinutesIsValueOverSixty() {
+        rebuild();
+        for (ResourceLocation item : SEEDED) {
+            assertEquals(ItemValuator.value(item) / (double) LaborTime.COINS_PER_MINUTE,
+                    ItemValuator.laborMinutes(item), 1e-9,
+                    item + " 的劳动时间 = 估价 ÷ 60");
+        }
     }
 
     // ==================== 边界 ====================
 
     @Test
-    @Order(6)
+    @Order(7)
     void unknownItemIsWorthNothing() {
         rebuild();
         assertEquals(0, ItemValuator.value(UNKNOWN), "既没种子也没配方的物品估值 0");
         assertEquals(0, ItemValuator.purchasePrice(UNKNOWN), "不可购买");
+        assertEquals(0, ItemValuator.laborMinutes(UNKNOWN), "也没有劳动时间");
     }
 
     @Test
-    @Order(7)
+    @Order(8)
     void rebuildIsIdempotent() {
         rebuild();
         Map<ResourceLocation, Integer> first = Map.copyOf(ItemValuator.snapshot());
@@ -190,7 +215,7 @@ class ItemValuatorTest {
      * 所以价格塌到 0）。调试时最需要被认出来的就是这种情况。
      */
     @Test
-    @Order(8)
+    @Order(9)
     void originReportsWhereThePriceCameFrom() {
         rebuild();
 
@@ -218,6 +243,89 @@ class ItemValuatorTest {
         assertEquals(ItemValuator.Source.NONE, ItemValuator.origin(null).source(), "null 不能 NPE");
     }
 
+    // ==================== 整合包：深加工链（整套改动的验收标准） ====================
+
+    /** 深链的底层原料：60 金币 = 1 分钟劳动（一个「粗矿」量级的价格）。 */
+    private static final int CHAIN_BASE_SEED = 60;
+
+    /**
+     * 一条 12 层的「1 个 A → 1 个 B」机器链 —— ATM10 那类整合包的典型形状。
+     *
+     * <p>为什么这条用例是整套改动的**验收标准**：1:1 的配方在材料成本上完全不涨
+     * （{@code floor(60 / 1) = 60}，十二层之后末端还是 60 金币），所以旧公式把末端物品
+     * 按第一层原料的价格卖 —— 那正是玩家反馈的「后期物品被廉价出售」。
+     * 现在靠「每层的工序时间」把买价顶上去，而**回收价一分钱没动**。
+     *
+     * <p>⛔ 这条用例**故意放在最后**：它用自己的一张表覆盖 {@link ItemValuator} 的静态缓存，
+     * 之后再断言别的物品就会量到这张表上（同一个类里用 {@link Order} 锁住顺序）。
+     */
+    @Test
+    @Order(10)
+    void deepMachineChainIsExpensiveToBuyButStillCheapToRecycle() {
+        int layers = 12;
+        ResourceLocation base = id("mcstock_test_chain_base");
+        List<ResourceLocation> chain = new java.util.ArrayList<>(layers);
+        for (int i = 1; i <= layers; i++) {
+            chain.add(id("mcstock_test_chain_" + i));
+        }
+        // 模组命名空间 → 走 RecipeSteps.DEFAULT_MODDED 那一档（原版默认值是 0.25，差 16 倍）
+        ResourceLocation machine = ResourceLocation.fromNamespaceAndPath("mcstock_test", "grinding");
+
+        Map<ResourceLocation, List<RecipeGraph.RecipeEntry>> byOutput = new LinkedHashMap<>();
+        ResourceLocation previous = base;
+        for (ResourceLocation step : chain) {
+            byOutput.put(step, List.of(new RecipeGraph.RecipeEntry(
+                    List.of(new RecipeGraph.Ingredient(List.of(previous), 1)), 1, machine)));
+            previous = step;
+        }
+        Set<ResourceLocation> items = new java.util.LinkedHashSet<>(chain);
+        items.add(base);
+
+        ItemValuator.rebuild(Map.of(base, CHAIN_BASE_SEED), Map.of(), Map.of(), Set.copyOf(items),
+                new StubGraph(Map.copyOf(byOutput)));
+
+        ResourceLocation top = chain.get(layers - 1);
+        // ① 回收价一点没变：1:1 链的材料成本就是底层原料的成本
+        assertEquals(CHAIN_BASE_SEED, ItemValuator.value(top),
+                "1:1 链的回收价必须还是原料价（卖出侧一个字都没动）");
+        assertEquals(CHAIN_BASE_SEED, ItemValuator.value(chain.get(0)));
+        // ② 买价按层数线性上涨：每层多一份模组工序（4 分钟 = 240 金币）
+        double expectedMinutes = CHAIN_BASE_SEED / (double) LaborTime.COINS_PER_MINUTE
+                + layers * RecipeSteps.DEFAULT_MODDED;
+        assertEquals(expectedMinutes, ItemValuator.laborMinutes(top), 1e-6,
+                "十二层的劳动时间 = 底层劳动时间 + 12 × 模组步长");
+        assertTrue(ItemValuator.purchasePrice(top) >= 2500,
+                "十二层链的末端买价必须贵到「捡点东西换不到」，实际 " + ItemValuator.purchasePrice(top));
+        // ③ 底层原料自己还是材料价（劳动时间那条轨道不该抬高基础物资）
+        assertEquals((int) Math.ceil(CHAIN_BASE_SEED * ItemValuator.PURCHASE_MARKUP),
+                ItemValuator.purchasePrice(base));
+        assertTrue(ItemValuator.purchasePrice(top) > ItemValuator.purchasePrice(base) * 30,
+                "末端与底层必须拉开量级差距");
+        // ④ 冷却跟着买价走：1 金币 = 1 秒劳动
+        assertEquals(ItemValuator.purchasePrice(top),
+                ItemValuator.cooldownSeconds(ItemValuator.purchasePrice(top)));
+    }
+
+    /**
+     * 冷却 = 买价秒数，带下限（60 金币以下不限购）与上限（24 小时）。
+     *
+     * <p>这三个数是**同一条换算**的三种边界：1 金币 = 1 秒劳动，所以「买一件要等多久」
+     * 就是「自己造一件要多久」。下限是为了不让一块泥土把玩家锁在按钮前，
+     * 上限是为了不让整合包里的天价物品锁到几个月后（那等于买不到）。
+     */
+    @Test
+    @Order(11)
+    void cooldownFollowsPriceWithAFloorAndACap() {
+        assertEquals(0, ItemValuator.cooldownSeconds(0), "不可购买 = 没有冷却");
+        assertEquals(0, ItemValuator.cooldownSeconds(ItemValuator.MIN_COOLDOWN_SECONDS - 1),
+                "便宜物品不限购（否则买一组土要连点两分钟）");
+        assertEquals(ItemValuator.MIN_COOLDOWN_SECONDS,
+                ItemValuator.cooldownSeconds(ItemValuator.MIN_COOLDOWN_SECONDS));
+        assertEquals(3000, ItemValuator.cooldownSeconds(3000), "1 金币 = 1 秒");
+        assertEquals(ItemValuator.MAX_COOLDOWN_SECONDS,
+                ItemValuator.cooldownSeconds(Integer.MAX_VALUE), "上限 24 小时");
+    }
+
     // ==================== stub 配方图 ====================
 
     /** 写死的一张配方图，覆盖「多选一候选 + 数量 + 多配方」三种形状。 */
@@ -235,7 +343,11 @@ class ItemValuatorTest {
     }
 
     private static RecipeGraph.RecipeEntry entry(int outputCount, RecipeGraph.Ingredient... inputs) {
-        return new RecipeGraph.RecipeEntry(List.of(inputs), outputCount);
+        // 类型给原版工作台：这一步只给「劳动时间」那条轨道用，回收价完全不受影响。
+        // 具体取哪个类型不重要（本类断言的是回收价与两条轨道的 max），
+        // 但**必须显式给**：{@code null} 会落到默认值上，把测试的意图藏起来。
+        return new RecipeGraph.RecipeEntry(List.of(inputs), outputCount,
+                ResourceLocation.fromNamespaceAndPath("minecraft", "crafting_shaped"));
     }
 
     private static RecipeGraph.Ingredient ingredient(int count, ResourceLocation... candidates) {

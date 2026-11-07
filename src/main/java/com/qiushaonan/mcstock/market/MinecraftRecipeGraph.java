@@ -172,8 +172,23 @@ public final class MinecraftRecipeGraph implements RecipeGraph {
         }
 
         byOutput.computeIfAbsent(output, key -> new ArrayList<>())
-                .add(new RecipeEntry(inputs, Math.max(1, result.getCount())));
+                .add(new RecipeEntry(inputs, Math.max(1, result.getCount()), typeOf(recipe)));
         return true;
+    }
+
+    /**
+     * 配方类型 id —— 只给「劳动时间」那条轨道用（{@link RecipeSteps} 按类型给每一步加多少分钟）。
+     *
+     * <p>⚠️ 拿不到就返回 {@code null}（按原版默认步长算），绝不抛：某些模组的
+     * {@code RecipeType} 可能压根没注册进 {@code BuiltInRegistries.RECIPE_TYPE}。
+     */
+    private static ResourceLocation typeOf(Recipe<?> recipe) {
+        try {
+            net.minecraft.world.item.crafting.RecipeType<?> type = recipe.getType();
+            return type == null ? null : BuiltInRegistries.RECIPE_TYPE.getKey(type);
+        } catch (Throwable e) {
+            return null;
+        }
     }
 
     /**

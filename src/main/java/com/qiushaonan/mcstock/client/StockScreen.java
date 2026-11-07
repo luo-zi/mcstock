@@ -1523,7 +1523,7 @@ public class StockScreen extends AbstractContainerScreen<StockMenu> {
         this.unlockPlanCache = computeUnlockPlan();
     }
 
-    /** 投放区签名（18 格的 id + 件数；空格记 {@code -}）。 */
+    /** 投放区签名（18 格的 id + 件数；空格记 {@code -}），末尾带上游戏时间（分钟）。 */
     private String barSignature() {
         if (this.menu == null) {
             return "";
@@ -1539,6 +1539,10 @@ public class StockScreen extends AbstractContainerScreen<StockMenu> {
             }
             sb.append('|');
         }
+        // ⚠️ 游戏时间也要进签名：投放区没动，但「玩够时间自动开放」那条路会让
+        //    某一项的 already 从 false 翻成 true（界面该从「可解锁」变成「不用解锁」）。
+        //    按**分钟**取整而不是按秒 —— 否则每秒都要重算一遍整份预演（目录是 7 千条）。
+        sb.append('#').append(StockClientState.playSeconds / 60);
         return sb.toString();
     }
 
@@ -1572,7 +1576,14 @@ public class StockScreen extends AbstractContainerScreen<StockMenu> {
         long price = shopUnitPriceCoins(id);
         // 价格未知（不在目录里）时**不当成「不用解锁」**：宁可让玩家点一下被服务端回绝，
         // 也不要让一件真该解锁的东西悄悄变成「没法解锁」
-        return price > 0 && price < UnlockRules.MIN_PRICE_TO_LOCK;
+        if (price <= 0) {
+            return false;
+        }
+        // 「玩够时间就自动开放」那条路：判据与服务端是同一份（UnlockRules#isLocked）。
+        // 客户端缺的只有「有没有种子价」这一个信息，猜错的后果是按钮亮着、
+        // 服务端回一句「已经不需要解锁」—— **不会消耗任何物品**（服务端 already 是权威）。
+        return !UnlockRules.isLocked((int) Math.min(Integer.MAX_VALUE, price), false,
+                false, StockClientState.playSeconds);
     }
 
     /** 目录里的单价（**金币**，和 {@code shopPrices} 同口径）；不在目录里返回 0。 */

@@ -36,6 +36,15 @@ import java.util.TreeSet;
  *       产物的估值必须跟着塌到 0，否则同样能套利。</li>
  * </ul>
  *
+ * <h2>两条轨道（2026-11-09 起）</h2>
+ * <ul>
+ *   <li><b>回收价</b> = {@link #value} = 材料成本（本节开头那套三层优先级 + 两条防印钞规矩）。
+ *       <b>一分钱都没动</b>，它是整个经济的地板；</li>
+ *   <li><b>采购价</b> = {@link #purchasePrice} = {@code max(材料价 × 1.18, 劳动时间 × 60)}。
+ *       第二条支由 {@link LaborTime} 提供，专门解决「模组机器链里 1:1 配方让后期物品
+ *       按原料价出售」这个病 —— 详见 {@link ItemValuator#purchasePrice}。</li>
+ * </ul>
+ *
  * <h2>缓存</h2>
  * 整张表放在一个 {@code volatile} 的不可变 map 里，{@link #rebuild} 一次性换掉引用 ——
  * 估值线程（服务端 tick、GUI 查询、别的模组的兼容代码）读到的永远是完整的一版，
@@ -74,6 +83,15 @@ public final class ItemValuator {
      * 里一起换掉。同样是不可变快照，同样只读。
      */
     private static volatile Map<ResourceLocation, Origin> origins = Map.of();
+
+    /**
+     * **劳动时间表**（物品 → 分钟），采购价的第二条轨道，见 {@link LaborTime}。
+     *
+     * <p>⚠️ 与 {@link #values} 是两件事：{@code values} 管**回收价**（材料成本，一分钱没动），
+     * 这张表只管**买价**能不能更高。整张表在同一轮 {@link #rebuild} 里换掉；
+     * 建不起来就是空表，买价自动退回「材料价 × 1.18」那一档 —— 降级，不失效。
+     */
+    private static volatile Map<ResourceLocation, Double> labor = Map.of();
 
     private ItemValuator() {
     }
@@ -220,6 +238,18 @@ public final class ItemValuator {
 
         values = Map.copyOf(table);
         origins = Map.copyOf(originTable);
+
+        // 劳动时间表（采购价的第二条轨道）：锚在**种子价**上，按配方图一层层累加工序时间。
+        // ⚠️ 它在估值表**之后**算，因为种子价就是它的锚点；失败了也只是买价不加成，
+        //    绝不影响上面那张回收价表（那条是防印钞机的地板，不能跟着一起塌）。
+        try {
+            labor = LaborTime.compute(table, seeded, recipes, RecipeSteps::minutes);
+        } catch (Throwable e) {
+            skipped++;
+            labor = Map.of();
+            LOGGER.warn("[mcstock] 劳动时间表构建失败，采购价退回「材料价 × 1.18」那一档", e);
+        }
+
         if (skipped > 0) {
             LOGGER.warn("[mcstock] 估值表重建完成：{} 项有价（跳过 {} 条坏条目 —— "
                     + "坏种子 / 坏标签 / 抛异常的配方查询，它们按「无价」处理）", values.size(), skipped);
@@ -245,7 +275,19 @@ public final class ItemValuator {
     }
 
     /**
-     * 采购价（金币，整数）= {@code ceil(估价 × 1.18)}；估价为 0 时返回 0（买不到）。
+     * 采购价（金币）= {@code max(ceil(估价 × 1.18), ceil(劳动时间 × 60))}；
+     * 估价为 0 时返回 0（买不到）。
+     *
+     * <h2>为什么是两条轨道取 max，而不是替换掉旧公式</h2>
+     * <ul>
+     *   <li><b>旧公式那一支是「防印钞机地板」</b>：买价 ≥ 回收价 × 1.18 保证了
+     *       「买原料 → 合成 → 回收」永远亏。它绝不能失效，否则整个经济被套利吃掉；</li>
+     *   <li><b>劳动时间那一支是「后期物品该贵」</b>：材料成本算不出来的东西
+     *       （模组机器链里那些 1:1 的配方）由它来标价，链越深越贵；</li>
+     *   <li>两者取 {@code max}：**只会更贵，永远不会更便宜** —— 于是旧存档里已经是
+     *       「按材料价买」的东西不会突然变便宜，回收价更是一个字都没动。</li>
+     * </ul>
+     *
      * <p>用 {@code ceil} 而不是四舍五入：1 金币的东西卖出 1.18 → 收 2 金币，
      * 否则最低价那一档会变成「买进来和卖出去一个价」的免费搬运。
      */
@@ -254,8 +296,58 @@ public final class ItemValuator {
         if (value <= 0) {
             return 0;
         }
-        return (int) Math.ceil(value * PURCHASE_MARKUP);
+        int byMaterial = (int) Math.ceil(value * PURCHASE_MARKUP);
+        double minutes = laborMinutes(item);
+        if (minutes <= 0) {
+            return byMaterial;
+        }
+        double coins = minutes * LaborTime.COINS_PER_MINUTE;
+        int byLabor = coins >= Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) Math.ceil(coins);
+        return Math.max(byMaterial, byLabor);
     }
+
+    /**
+     * 做出这个物品要多少**分钟**劳动（0 = 推不出来，买价不加成）。
+     *
+     * <p>口径见 {@link LaborTime}：锚在种子价上（1 金币 = 1 秒劳动），按配方图逐层累加
+     * 工序时间。**只影响买价**，回收价与它无关。
+     */
+    public static double laborMinutes(ResourceLocation item) {
+        if (item == null) {
+            return 0;
+        }
+        Double minutes = labor.get(item);   // volatile 只读一次，拿到一整版快照
+        return minutes == null ? 0 : minutes;
+    }
+
+    /**
+     * 买一件要多长时间冷却（**秒**）= 采购价 ÷ 60 分钟 = 采购价秒。
+     *
+     * <p>为什么就是价格本身：1 金币 = 1 秒劳动（见 {@link LaborTime#COINS_PER_MINUTE}），
+     * 所以「冷却时长 = 这件东西对应的劳动时间」—— 买入的吞吐量正好等于自己生产的吞吐量。
+     * <b>它们是同一个数，不需要第二个配置项</b>，价格一改冷却自动跟上。
+     *
+     * <p>上限 {@link #MAX_COOLDOWN_SECONDS}（24 小时）：没有上限的话，
+     * 一件几十万金币的整合包物品会锁到几个月后，那等同于买不到，玩家只会以为按钮坏了。
+     *
+     * <p>下限 {@link #MIN_COOLDOWN_SECONDS}（1 分钟，= 60 金币）：便宜物品**干脆没有冷却**。
+     * 这不是偷懒 —— 一块泥土的「劳动时间」只有 2 秒，若真按 2 秒限购，
+     * 玩家连买一组土都要连点两分钟，那是纯折腾；而限购真正要挡的是「成批吃进高价货」。
+     *
+     * @param purchasePrice 采购价（金币）；{@code <= 0} 返回 0（不可购买的东西没有冷却可言）
+     */
+    public static int cooldownSeconds(int purchasePrice) {
+        if (purchasePrice < MIN_COOLDOWN_SECONDS) {
+            return 0;
+        }
+        return Math.min(purchasePrice, MAX_COOLDOWN_SECONDS);
+    }
+
+    /** 冷却上限：24 小时（秒）。见 {@link #cooldownSeconds}。 */
+    public static final int MAX_COOLDOWN_SECONDS = 24 * 60 * 60;
+
+    /** 冷却下限：低于这个价格的物品**没有冷却**（见 {@link #cooldownSeconds}）。 */
+    public static final int MIN_COOLDOWN_SECONDS = 60;
 
     /** 整张估值表的只读快照（购买页要列举可采购物品时用；不要试图修改它）。 */
     public static Map<ResourceLocation, Integer> snapshot() {

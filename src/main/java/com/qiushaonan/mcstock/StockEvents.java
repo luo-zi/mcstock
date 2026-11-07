@@ -144,6 +144,10 @@ public final class StockEvents {
     public static void onAddReloadListener(AddReloadListenerEvent event) {
         Errors.guard("StockEvents#onAddReloadListener", "注册估值 JSON 监听器失败（本次 reload 后估值可能不刷新）",
                 () -> event.addListener(ItemValueRules.listener()));
+        // 工序步长（采购价那条「劳动时间」轨道的唯一人工标定处）。和上面那个分开注册：
+        // 其中一个文件写坏不该连累另一个 —— 步长没了只是买价退回材料价，种子没了是整张表归零。
+        Errors.guard("StockEvents#onAddReloadListener", "注册工序步长监听器失败（买价退回材料价那一档）",
+                () -> event.addListener(com.qiushaonan.mcstock.market.RecipeStepRules.listener()));
         valuesBuilt = false;
         // 数据包换了，之前「建不起来」的结论要作废，下次登录重新试一遍
         valuesUnavailable = false;
