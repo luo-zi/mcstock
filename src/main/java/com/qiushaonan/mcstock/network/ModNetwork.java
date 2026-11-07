@@ -47,8 +47,12 @@ public final class ModNetwork {
      * {@link C2SCancelConditionalOrder} / {@link S2CConditionalOrders} 三个载荷类型。
      * 载荷类型表是连接协商的一部分，旧客户端不认识新通道，必须靠版本号挡住；
      * {@link S2CStockSnapshot} 本身的字段一个没动，所以不需要动那个大 record。
+     *
+     * <p>「5 → 6」的原因（解锁页）：新增 {@link C2SUnlock} / {@link S2CUnlocked} 两个载荷类型。
+     * 同样是「载荷类型表变了」，旧客户端不认识 {@code mcstock:unlocked} 通道；
+     * 已有的 {@link S2CShopCatalog} / {@link S2CStockSnapshot} 字段一个没动。
      */
-    private static final String PROTOCOL_VERSION = "5";
+    private static final String PROTOCOL_VERSION = "6";
 
     private ModNetwork() {
     }
@@ -98,6 +102,11 @@ public final class ModNetwork {
                 C2SCancelConditionalOrder.TYPE,
                 C2SCancelConditionalOrder.STREAM_CODEC,
                 C2SCancelConditionalOrder::handle);
+        // 解锁（空包：投放区是服务端容器，服务端自己扫；协议 v6）
+        registrar.playToServer(
+                C2SUnlock.TYPE,
+                C2SUnlock.STREAM_CODEC,
+                C2SUnlock::handle);
 
         // ---------- 服务端 → 客户端 ----------
         // 行情快照：所有数字一次性推过去（价格 / 涨跌 / 持仓 / 阴阳柱 / 资金）
@@ -120,5 +129,10 @@ public final class ModNetwork {
                 S2CConditionalOrders.TYPE,
                 S2CConditionalOrders.STREAM_CODEC,
                 S2CConditionalOrders::handle);
+        // 已解锁物品表（进界面 / 解锁成功后推一份，整份替换；协议 v6）
+        registrar.playToClient(
+                S2CUnlocked.TYPE,
+                S2CUnlocked.STREAM_CODEC,
+                S2CUnlocked::handle);
     }
 }

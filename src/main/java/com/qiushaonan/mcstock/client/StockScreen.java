@@ -9,6 +9,7 @@ import com.qiushaonan.mcstock.market.Position;
 import com.qiushaonan.mcstock.market.PositionMath;
 import com.qiushaonan.mcstock.market.StockCatalog;
 import com.qiushaonan.mcstock.market.StockDefs;
+import com.qiushaonan.mcstock.market.UnlockRules;
 import com.qiushaonan.mcstock.menu.StockMenu;
 import com.qiushaonan.mcstock.network.C2SCancelConditionalOrder;
 import com.qiushaonan.mcstock.network.C2SClosePosition;
@@ -17,6 +18,7 @@ import com.qiushaonan.mcstock.network.C2SPurchaseItem;
 import com.qiushaonan.mcstock.network.C2SRecycleBar;
 import com.qiushaonan.mcstock.network.C2SRequestSnapshot;
 import com.qiushaonan.mcstock.network.C2STradeStock;
+import com.qiushaonan.mcstock.network.C2SUnlock;
 import com.qiushaonan.mcstock.network.S2CStockSnapshot;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
@@ -77,6 +79,7 @@ public class StockScreen extends AbstractContainerScreen<StockMenu> {
     private static final int PAGE_RECYCLE = StockMenu.PAGE_RECYCLE;
     private static final int PAGE_TRADE = StockMenu.PAGE_MARKET;
     private static final int PAGE_SHOP = StockMenu.PAGE_SHOP;
+    private static final int PAGE_UNLOCK = StockMenu.PAGE_UNLOCK;
 
     /**
      * 数量 ▲▼ 的档位表：**1-2-5 系列**（低段密、高段疏）。
@@ -157,6 +160,20 @@ public class StockScreen extends AbstractContainerScreen<StockMenu> {
     private int condScroll;
     /** 标题栏「条件单」按钮：打开覆盖层时它是「再点一下关掉」的入口。 */
     private Button condButton;
+
+    /**
+     * 解锁页的「解锁」按钮（只在 {@code PAGE_UNLOCK} 存在）。
+     *
+     * <p>⚠️ 它的可用状态**每 tick 重算**（{@link #containerTick}）：玩家往投放区塞东西是
+     * 原版槽位交互，不经过本类的任何回调 —— 不每 tick 刷一次，就会出现
+     * 「东西放够了一组，按钮还是灰的」（和回收按钮靠 {@code recycleTotal} 每次推送刷新的道理一样）。
+     */
+    private Button unlockButton;
+
+    /** 投放区签名（见 {@link #barSignature()}）：变了才重算预演。 */
+    private String unlockSignature = "";
+    /** 上一次算出来的解锁预演（解锁页的状态文字与按钮可用性都读它）。 */
+    private List<UnlockRules.Candidate> unlockPlanCache = List.of();
     /**
      * 条件单覆盖层的控件：打开时只有这些 visible，早退的 {@link #render} 也只手动绘制这些。
      *
@@ -254,7 +271,7 @@ public class StockScreen extends AbstractContainerScreen<StockMenu> {
     private List<Position> posCache = new ArrayList<>();
 
     /** 当前页签的三个按钮（切页后要改文案，所以留引用）。 */
-    private final Button[] tabButtons = new Button[3];
+    private final Button[] tabButtons = new Button[StockGuiLayout.TAB_COUNT];
 
     /** 购买页当前过滤后的显示列表（物品 + 单价分）。每帧重建太亏，只在目录/过滤条件变化时重算。 */
     private final List<ShopEntry> shopView = new ArrayList<>();
@@ -346,8 +363,8 @@ public class StockScreen extends AbstractContainerScreen<StockMenu> {
     private void buildWidgets() {
         StockGuiLayout.Layout l = this.layout;
 
-        // ---------- 页签（三个页面共用） ----------
-        for (int i = 0; i < 3; i++) {
+        // ---------- 页签（四个页面共用：回收 / 行情 / 购买 / 解锁） ----------
+        for (int i = 0; i < StockGuiLayout.TAB_COUNT; i++) {
             final int target = i;
             Component label = Component.translatable(tabKey(i));
             Button tab = StockWidgets.tabButton(l.tabs()[i], label, i == this.page,
@@ -380,6 +397,17 @@ public class StockScreen extends AbstractContainerScreen<StockMenu> {
         if (this.page == PAGE_RECYCLE) {
             addRenderableWidget(StockWidgets.button(l.recycleBtn(),
                     recycleButtonLabel(StockClientState.recycleTotal), this::sendRecycle));
+        }
+
+        // ---------- 解锁页：解锁按钮（与回收按钮同一个矩形，两页互斥不会同时出现） ----------
+        if (this.page == PAGE_UNLOCK) {
+            refreshUnlockPlan();
+            this.unlockButton = StockWidgets.button(l.unlockBtn(),
+                    Component.translatable("gui.mcstock.unlock.button"), this::sendUnlock);
+            this.unlockButton.active = UnlockRules.readyCount(this.unlockPlanCache) > 0;
+            addRenderableWidget(this.unlockButton);
+        } else {
+            this.unlockButton = null;   // 别的页面上那个按钮已经被 clearWidgets 掉了，别留悬空引用
         }
 
         // ---------- 购买页：分类 / 搜索 / 翻页 ----------
@@ -604,6 +632,14 @@ public class StockScreen extends AbstractContainerScreen<StockMenu> {
         // 新闻条的选片与滚动相位：**每 tick 推进**（不用挂钟 —— 暂停菜单里 world tick 停了，
         // 挂钟还在走，回来会发现字幕跳了一大段）
         tickNewsTicker();
+        // 解锁页：投放区是原版槽位交互（不经过本类任何回调），所以每 tick 用签名比一次 ——
+        // 变了才重算，算完立刻把按钮的可用态刷上去（否则「放够一组了按钮还是灰的」）
+        if (this.page == PAGE_UNLOCK) {
+            refreshUnlockPlan();
+            if (this.unlockButton != null) {
+                this.unlockButton.active = UnlockRules.readyCount(this.unlockPlanCache) > 0;
+            }
+        }
         // 持仓表格的「平仓」按钮：**每行一个是动态控件**，签名变了（开/平/爆仓 → 行数或顺序变了、
         // 滚轮/拖滚动条 → 滚动位置变了、改窗口 → 可见行数变了）才登记一次重建，
         // 真正的增删留到下一 tick（见 pendingAction 的注释）。
@@ -1109,7 +1145,7 @@ public class StockScreen extends AbstractContainerScreen<StockMenu> {
 
     /** 切页：重新摆槽位 + 重建控件。三个页签和所有内部跳转都走这里。 */
     private void setPage(int next) {
-        int clamped = Math.max(0, Math.min(2, next));
+        int clamped = Math.max(0, Math.min(StockGuiLayout.TAB_COUNT - 1, next));
         if (this.page == clamped) {
             return;
         }
@@ -1449,6 +1485,109 @@ public class StockScreen extends AbstractContainerScreen<StockMenu> {
         PacketDistributor.sendToServer(new C2SRecycleBar());
     }
 
+    /** 点解锁：空包，服务端自己扫投放区（客户端说的不算数）。 */
+    private void sendUnlock() {
+        PacketDistributor.sendToServer(new C2SUnlock());
+    }
+
+    /**
+     * 解锁页的**本地预演**：投放区里每种物品各有多少、一组是多少、还差多少。
+     *
+     * <p>它只决定「按钮能不能按」和「状态文字怎么写」，**不参与任何结算** ——
+     * 真正扣东西的是服务端 {@code StockService#unlock}，它拿的是同一份容器、
+     * 同一套 {@link UnlockRules}，所以两边算出来的结论一致（这也是把规则抽成纯 Java 的原因）。
+     *
+     * <p>⚠️ 客户端有一处**必然的信息缺口**：它不知道哪些物品「本来就不上锁」
+     * （那是服务端 {@code ItemValuator.origin} 才知道的种子表）。所以这里退一步用
+     * 「已解锁集合 + 目录价 &lt; 500 视为不用解锁」近似。猜错的后果只是
+     * 「按钮亮着、点下去服务端回一句『已经不需要解锁』」，**不会误消耗任何物品** ——
+     * 服务端那一侧的 {@code already} 判定是权威的。
+     */
+    private List<UnlockRules.Candidate> unlockPlan() {
+        return this.unlockPlanCache;
+    }
+
+    /**
+     * 重算预演（**只在投放区内容变了的时候才真的算**）。
+     *
+     * <p>为什么要缓存：目录里 7 千多条，逐条线性找单价是 O(目录大小)；
+     * 投放区没变的时候每 tick 重算是白烧 CPU。这里用「18 格的 id+件数」拼成一个签名，
+     * 签名不变就直接返回上一次的结果。
+     */
+    private void refreshUnlockPlan() {
+        String signature = barSignature();
+        if (signature.equals(this.unlockSignature)) {
+            return;
+        }
+        this.unlockSignature = signature;
+        this.unlockPlanCache = computeUnlockPlan();
+    }
+
+    /** 投放区签名（18 格的 id + 件数；空格记 {@code -}）。 */
+    private String barSignature() {
+        if (this.menu == null) {
+            return "";
+        }
+        var bar = this.menu.bar();
+        StringBuilder sb = new StringBuilder(bar.getContainerSize() * 8);
+        for (int i = 0; i < bar.getContainerSize(); i++) {
+            ItemStack stack = bar.getItem(i);
+            if (stack.isEmpty()) {
+                sb.append('-');
+            } else {
+                sb.append(BuiltInRegistries.ITEM.getKey(stack.getItem())).append('x').append(stack.getCount());
+            }
+            sb.append('|');
+        }
+        return sb.toString();
+    }
+
+    private List<UnlockRules.Candidate> computeUnlockPlan() {
+        if (this.menu == null) {
+            return List.of();
+        }
+        var bar = this.menu.bar();
+        Map<ResourceLocation, Integer> counts = new LinkedHashMap<>();
+        for (int i = 0; i < bar.getContainerSize(); i++) {
+            ItemStack stack = bar.getItem(i);
+            if (stack.isEmpty()) {
+                continue;
+            }
+            ResourceLocation id = BuiltInRegistries.ITEM.getKey(stack.getItem());
+            if (id != null) {
+                counts.merge(id, stack.getCount(), Integer::sum);
+            }
+        }
+        return UnlockRules.plan(counts, id -> {
+            Item item = BuiltInRegistries.ITEM.get(id);
+            return item == null ? 1 : Math.max(1, new ItemStack(item).getMaxStackSize());
+        }, this::noNeedUnlock);
+    }
+
+    /** 「这一项不用再解锁」的客户端近似口径（见 {@link #unlockPlan()} 里那段说明）。 */
+    private boolean noNeedUnlock(ResourceLocation id) {
+        if (StockClientState.isUnlocked(id)) {
+            return true;
+        }
+        long price = shopUnitPriceCoins(id);
+        // 价格未知（不在目录里）时**不当成「不用解锁」**：宁可让玩家点一下被服务端回绝，
+        // 也不要让一件真该解锁的东西悄悄变成「没法解锁」
+        return price > 0 && price < UnlockRules.MIN_PRICE_TO_LOCK;
+    }
+
+    /** 目录里的单价（**金币**，和 {@code shopPrices} 同口径）；不在目录里返回 0。 */
+    private long shopUnitPriceCoins(ResourceLocation id) {
+        ResourceLocation[] items = StockClientState.shopItems;
+        int[] prices = StockClientState.shopPrices;
+        int n = Math.min(items.length, prices.length);
+        for (int i = 0; i < n; i++) {
+            if (id.equals(items[i])) {
+                return prices[i];
+            }
+        }
+        return 0L;
+    }
+
     /**
      * 切分类：只换文案 + 重算列表，**不重建控件**。
      *
@@ -1701,6 +1840,7 @@ public class StockScreen extends AbstractContainerScreen<StockMenu> {
         return switch (page) {
             case PAGE_RECYCLE -> "gui.mcstock.tab.recycle";
             case PAGE_SHOP -> "gui.mcstock.tab.shop";
+            case PAGE_UNLOCK -> "gui.mcstock.tab.unlock";
             default -> "gui.mcstock.tab.trade";
         };
     }
@@ -1774,6 +1914,7 @@ public class StockScreen extends AbstractContainerScreen<StockMenu> {
         }
         switch (this.page) {
             case PAGE_RECYCLE -> drawRecycleBg(g, l);
+            case PAGE_UNLOCK -> drawUnlockBg(g, l);
             case PAGE_SHOP -> drawShopBg(g, l, mouseX, mouseY);
             default -> drawTradeBg(g, l, mouseX, mouseY);
         }
@@ -1828,6 +1969,36 @@ public class StockScreen extends AbstractContainerScreen<StockMenu> {
     }
 
     // ==================== 绘制：行情页 ====================
+
+    // ==================== 绘制：解锁页 ====================
+
+    /**
+     * 解锁页的底：投放区（= 回收栏那 18 格）+ 背包 + 状态块 + 说明块。
+     *
+     * <p>⚠️ 和回收页共用同一套矩形（{@code unlockInfo/unlockBtn/unlockDetail} 就是
+     * {@code barInfo/recycleBtn/barDetail}），所以这四块的位置、折叠规则、降级档位全都继承过来 ——
+     * 不要在这里另算坐标，否则小窗口下两页会各挤各的。
+     */
+    private void drawUnlockBg(GuiGraphics g, StockGuiLayout.Layout l) {
+        StockGuiLayout.Rect bar = l.bar();
+        StockWidgets.slotGrid(g, bar.x(), bar.y(), StockGuiLayout.BAR_COLS, StockGuiLayout.barRows(l));
+
+        StockGuiLayout.Rect inv = l.inv();
+        StockWidgets.slotGrid(g, inv.x(), inv.y(), StockGuiLayout.INV_COLS, StockGuiLayout.INV_ROWS);
+        StockGuiLayout.Rect hotbar = l.hotbar();
+        StockWidgets.slotGrid(g, hotbar.x(), hotbar.y(), StockGuiLayout.INV_COLS, 1);
+
+        // 状态块 / 说明块：被折叠（宽或高为 0）时一律不画（同回收页，避免画出一条描边）
+        if (l.unlockInfo().w() > 0 && l.unlockInfo().h() > 0) {
+            StockWidgets.insetBox(g, l.unlockInfo(), StockTheme.COLOR_INSET_FILL, StockTheme.COLOR_BORDER);
+        }
+        if (l.detailLines() > 0 && l.unlockDetail().w() > 0 && l.unlockDetail().h() > 0) {
+            StockWidgets.insetBox(g, l.unlockDetail(), StockTheme.COLOR_INSET_FILL, StockTheme.COLOR_BORDER);
+        }
+
+        StockGuiLayout.Rect label = l.invLabel();
+        g.fill(label.x(), label.y() - 3, label.right(), label.y() - 2, StockTheme.COLOR_BORDER);
+    }
 
     private void drawTradeBg(GuiGraphics g, StockGuiLayout.Layout l, int mouseX, int mouseY) {
         int selected = clampStock(StockClientState.selected);
@@ -1974,6 +2145,7 @@ public class StockScreen extends AbstractContainerScreen<StockMenu> {
         }
         switch (this.page) {
             case PAGE_RECYCLE -> drawRecycleText(g, l, font);
+            case PAGE_UNLOCK -> drawUnlockText(g, l, font);
             case PAGE_SHOP -> drawShopText(g, l, font, mouseX, mouseY);
             default -> drawTradeText(g, l, font, mouseX, mouseY);
         }
@@ -2355,6 +2527,144 @@ public class StockScreen extends AbstractContainerScreen<StockMenu> {
     }
 
     // ---------- 行情页文字 ----------
+
+    // ==================== 绘制：解锁页文字 ====================
+
+    /**
+     * 解锁页的文字：状态块讲「这一组够不够」，说明块讲「解锁是什么意思、解锁后多少钱」。
+     *
+     * <p>⚠️ 这里**只读** {@link #unlockPlanCache}，不重新扫容器（容器是原版槽位同步过来的，
+     * 每帧扫一遍 18 格没有意义，而且会和 {@link #containerTick} 里的签名缓存重复劳动）。
+     */
+    private void drawUnlockText(GuiGraphics g, StockGuiLayout.Layout l, Font font) {
+        List<UnlockRules.Candidate> plan = unlockPlan();
+        UnlockRules.Candidate focus = focusCandidate(plan);
+
+        // ---------- 状态块（投放区右边）：物品名 / 进度 / 结论 ----------
+        StockGuiLayout.Rect info = l.unlockInfo();
+        if (info.w() > 0 && info.h() >= 10) {
+            int x = info.x() + 2;
+            int w = Math.max(0, info.w() - 4);
+            int y = info.y() + 2;
+            if (focus == null) {
+                unlockLine(g, font, Component.translatable("gui.mcstock.unlock.empty").getString(),
+                        x, y, w, StockTheme.COLOR_MUTED);
+            } else {
+                y = unlockLine(g, font, unlockItemName(focus.item()), x, y, w, StockTheme.COLOR_TEXT);
+                y = unlockLine(g, font, focus.have() + " / " + focus.need(), x, y, w, StockTheme.COLOR_MUTED);
+                String status;
+                int color;
+                if (focus.already()) {
+                    status = Component.translatable("gui.mcstock.unlock.status.done").getString();
+                    color = StockTheme.COLOR_MUTED;
+                } else if (focus.complete()) {
+                    status = Component.translatable("gui.mcstock.unlock.status.ready").getString();
+                    color = StockTheme.COLOR_ACCENT;
+                } else {
+                    status = Component.translatable("gui.mcstock.unlock.status.short",
+                            String.valueOf(focus.missing())).getString();
+                    color = StockTheme.COLOR_MUTED;
+                }
+                unlockLine(g, font, status, x, y, w, color);
+            }
+        }
+
+        // ---------- 说明块（整行，最多 detailLines() 行）----------
+        int rows = l.detailLines();
+        StockGuiLayout.Rect detail = l.unlockDetail();
+        if (rows <= 0 || detail.w() <= 0) {
+            return;
+        }
+        int x = detail.x() + 4;
+        int w = Math.max(0, detail.w() - 8);
+        int top = detail.y() + StockGuiLayout.DETAIL_TEXT_INSET;
+        int i = 0;
+
+        i = unlockDetailRow(g, font, i, rows, x, top, w,
+                Component.translatable("gui.mcstock.unlock.hint.group").getString(), StockTheme.COLOR_TEXT);
+        i = unlockDetailRow(g, font, i, rows, x, top, w,
+                Component.translatable("gui.mcstock.unlock.hint.only").getString(), StockTheme.COLOR_MUTED);
+        if (focus != null && !focus.already()) {
+            long coins = shopUnitPriceCoins(focus.item());
+            String priceLine = coins > 0
+                    ? Component.translatable("gui.mcstock.unlock.hint.price",
+                    String.valueOf(coins)).getString()
+                    : Component.translatable("gui.mcstock.unlock.hint.noprice").getString();
+            unlockDetailRow(g, font, i, rows, x, top, w, priceLine,
+                    coins > 0 ? StockTheme.COLOR_TEXT : StockTheme.COLOR_MUTED);
+        }
+    }
+
+    /** 状态块的「下一行」：画一行并把 y 往下推 10px（超出行数就不画了）。 */
+    private int unlockLine(GuiGraphics g, Font font, String text, int x, int y, int width, int color) {
+        g.drawString(font, unlockClip(font, text, width), x, y, color, true);
+        return y + 10;
+    }
+
+    /** 说明块的第 {@code row} 行：返回下一行的行号（超出可用行数就原样返回）。 */
+    private int unlockDetailRow(GuiGraphics g, Font font, int row, int rows, int x, int top, int width,
+                                String text, int color) {
+        if (row >= rows) {
+            return row;
+        }
+        g.drawString(font, unlockClip(font, text, width),
+                x, top + row * StockGuiLayout.DETAIL_LINE_H, color, true);
+        return row + 1;
+    }
+
+    /**
+     * 按像素宽度截断（加省略号）。
+     *
+     * <p>项目里没有现成的截断工具（{@code Font#plainSubstrByWidth} 也没用过），
+     * 这里用 {@code font.width(String)} 自己量 —— 两个理由：只依赖最稳的那个 API；
+     * 而且调过去的是「先估宽度再截」，比逐字符试宽更省。
+     */
+    private static String unlockClip(Font font, String text, int width) {
+        if (text == null || text.isEmpty() || width <= 0) {
+            return "";
+        }
+        if (font.width(text) <= width) {
+            return text;
+        }
+        String ellipsis = "…";
+        int limit = Math.max(0, width - font.width(ellipsis));
+        int end = text.length();
+        while (end > 0 && font.width(text.substring(0, end)) > limit) {
+            end--;
+        }
+        return text.substring(0, end) + ellipsis;
+    }
+
+    /** 解锁页要突出的那一件：优先「现在就能解锁」，其次「差得最少」。 */
+    private static UnlockRules.Candidate focusCandidate(List<UnlockRules.Candidate> plan) {
+        if (plan == null || plan.isEmpty()) {
+            return null;
+        }
+        for (UnlockRules.Candidate c : plan) {
+            if (c.complete()) {
+                return c;
+            }
+        }
+        UnlockRules.Candidate best = null;
+        for (UnlockRules.Candidate c : plan) {
+            if (c.already() || c.have() <= 0) {
+                continue;
+            }
+            if (best == null || c.missing() < best.missing()) {
+                best = c;
+            }
+        }
+        return best == null ? plan.get(0) : best;
+    }
+
+    /** 物品显示名；查不到就用 id 顶替（绝不返回 null，绘制端不用再判）。 */
+    private static String unlockItemName(ResourceLocation id) {
+        Item item = BuiltInRegistries.ITEM.get(id);
+        if (item == null) {
+            return id == null ? "" : id.toString();
+        }
+        return new ItemStack(item).getHoverName().getString();
+    }
 
     private void drawTradeText(GuiGraphics g, StockGuiLayout.Layout l, Font font, int mouseX, int mouseY) {
         int stock = clampStock(StockClientState.selected);

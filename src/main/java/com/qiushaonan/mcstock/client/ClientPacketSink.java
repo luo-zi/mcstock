@@ -10,6 +10,7 @@ import com.qiushaonan.mcstock.network.S2CShopCatalog;
 import net.minecraft.resources.ResourceLocation;
 import com.qiushaonan.mcstock.network.S2CSlotValue;
 import com.qiushaonan.mcstock.network.S2CStockSnapshot;
+import com.qiushaonan.mcstock.network.S2CUnlocked;
 
 /**
  * 客户端收包入口：把 S2C 包拆进 {@link StockClientState}。
@@ -55,6 +56,25 @@ public final class ClientPacketSink {
                     ConditionalOrder.action(v.action()), v.qty(), v.leverage()));
         }
         StockClientState.conditionalOrders = out.toArray(new ConditionalOrder[0]);
+    }
+
+    /**
+     * 已解锁物品表：**整份替换**（协议 v6）。
+     *
+     * <p>只做数据搬运：畸形条目（null / id 解析失败已经在解码侧丢掉）不会再进到这里。
+     * 客户端不自己判断「这物品值不值得上锁」—— 那是服务端 {@code UnlockRules} 的事，
+     * 这里只保留「解锁过哪些」。
+     */
+    public static void onUnlocked(S2CUnlocked payload) {
+        java.util.Set<ResourceLocation> set = new java.util.HashSet<>();
+        if (payload.ids() != null) {
+            for (ResourceLocation id : payload.ids()) {
+                if (id != null) {
+                    set.add(id);
+                }
+            }
+        }
+        StockClientState.unlocked = java.util.Set.copyOf(set);
     }
 
     public static void onSlotValue(S2CSlotValue payload) {

@@ -58,6 +58,22 @@ public final class StockClientState {
     /** 回收栏合计（分）与种类数，由 S2C 槽位包推送。 */
     public static long recycleTotal = 0L;
     public static int recycleKinds = 0;
+
+    /**
+     * 已解锁的物品 id（服务端推什么就是什么，**整份替换**）。
+     *
+     * <p>客户端只用它做一件事：在购买页把「还没解锁」的贵物品置灰。
+     * 判定口径必须和服务端一致（{@code UnlockRules#requiresUnlock}）：
+     * <b>只有「推导价 ≥ 500 金币」的物品才上锁</b>，原版种子物品永远不上锁 ——
+     * 所以这里**不需要**知道哪个物品有种子价：客户端只要判断集合里有没有它即可，
+     * 「有没有种子价」这个判断只在服务端做（客户端拿不到 {@code ItemValuator} 的来源表）。
+     */
+    public static java.util.Set<ResourceLocation> unlocked = java.util.Set.of();
+
+    /** 这件物品解锁了吗（只对「需要上锁」的物品有意义，见 {@link #unlocked} 的注释）。 */
+    public static boolean isUnlocked(ResourceLocation id) {
+        return id != null && unlocked.contains(id);
+    }
     /**
      * 回收栏**逐格**的单件回收价（**分**，索引 = 回收栏槽位 0..17，空格为 0）。
      *

@@ -701,6 +701,31 @@ item.mcstock.<id>        gui.mcstock.<...>        message.mcstock.<...>
     - 新增/改动农作物价格时，`ExchangeRateTest#seededRecipesCannotBeArbitraged` 里的
       农作物配方（南瓜→种子、西瓜↔西瓜片、海带→干海带、蜂蜜瓶↔蜂蜜块、蘑菇→蘑菇煲…）
       必须同步补上，否则「买原料做产物再卖」这条线没人守。
+41. **解锁页（第 4 个页签）：投放区复用回收栏，「一组」= `getMaxStackSize()`**（2026-11-08）：
+    机制一句话：**交出一整组 = 证明你能产出它 → 永久解锁该物品的购买资格**。
+    - **不新开 18 格容器**，直接复用 `StockMenu#bar()`：两个动作本质都是「把东西交出去」，
+      区别只在结算方式（换钱 / 换资格）。新开容器要增删槽位，会破坏
+      `lastSlots`/`remoteSlots` 的对齐（第 18 条），风险差一个量级。
+    - **几何整块复用回收页**：`Layout#unlockInfo/unlockBtn/unlockDetail` 返回的就是
+      `barInfo/recycleBtn/barDetail`。好处是 `planRecycle` 那套「放不下就降级」
+      （NORMAL / MERGED_INFO / COMPACT）直接继承，不用再写一份并各自漂移。
+      锚是 `StockGuiLayoutTest#unlockPageReusesTheRecycleGeometry`。
+    - **三条「不许静默吞东西」的消费口径**（纯规则在 `UnlockRules`，单测 `UnlockRulesTest`）：
+      ① 只消耗**恰好一组**，多余的原样留在投放区；② 不足一组的**一件都不动**；
+      ③ 已解锁 / 本来就不上锁的**一件都不动**。
+    - **「一组」取 `getMaxStackSize()`**（材料 64 / 部分模组 16 / 工具护甲 1）：
+      这是游戏自己给的批量定义，整合包不需要任何配置，而且天然是难度刻度
+      （工具交 1 个、材料交 64 个）。
+    - **上锁口径只有一条**：`!seeded && 买价 ≥ 500`（`UnlockRules#requiresUnlock`）。
+      **有种子的原版物品永不上锁** —— 它们是购买页的基础物资、也是兑换尺度的锚
+      （`ExchangeRateTest` 守的就是它们），上锁等于把购买页清空。
+    - ⚠️ **客户端判不出「这个物品要不要解锁」**（种子表只在服务端的 `ItemValuator.origin` 里），
+      所以客户端用「已解锁集合 + 目录价 < 500」近似，**服务端才是权威**。
+      猜错的后果只是「按钮亮着、点下去服务端回一句不需要解锁」，**绝不误消耗**：
+      `StockService#unlock` 里 `already` 的判定优先级最高。
+    - **协议 v6**；解锁表走**独立小包** `S2CUnlocked`：绝不塞进每 2 秒的行情快照，
+      也**绝不因为解锁一次就重发目录**（整合包里 7799 条 = 8 片，那会变成「点一下卡一下」）。
+    - 解锁表存成 `ModAttachments.UNLOCKED`（不可变 `Set`，写入一律 `setData` 整体替换）。
 
 ## 7. 实机验收与调试方法
 

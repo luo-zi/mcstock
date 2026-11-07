@@ -3,11 +3,15 @@ package com.qiushaonan.mcstock;
 import com.mojang.serialization.Codec;
 import com.qiushaonan.mcstock.market.ConditionalOrderSnapshot;
 import com.qiushaonan.mcstock.market.PortfolioSnapshot;
+import net.minecraft.resources.ResourceLocation;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.neoforge.attachment.AttachmentType;
 import net.neoforged.neoforge.registries.DeferredHolder;
 import net.neoforged.neoforge.registries.DeferredRegister;
 import net.neoforged.neoforge.registries.NeoForgeRegistries;
+
+import java.util.List;
+import java.util.Set;
 
 /**
  * 玩家附件注册：现金与持仓。
@@ -53,6 +57,28 @@ public class ModAttachments {
             ATTACHMENT_TYPES.register("conditional_orders",
                     () -> AttachmentType.builder(() -> ConditionalOrderSnapshot.EMPTY)
                             .serialize(ConditionalOrderSnapshot.CODEC)
+                            .copyOnDeath()
+                            .build());
+
+    /** 集合的 Codec：按列表落盘，读回来重新装成不可变集合（顺序无意义）。 */
+    private static final Codec<Set<ResourceLocation>> UNLOCKED_CODEC =
+            Codec.list(ResourceLocation.CODEC).xmap(Set::copyOf, List::copyOf);
+
+    /**
+     * 已解锁的物品 id（「投放区交过一组」的凭证）。
+     *
+     * <p>存成**不可变的 {@link Set}**：写入一律用 {@code setData(新集合)} 整体替换，
+     * 绝不在旧集合上就地改 —— 附件是 copyOnDeath 的，序列化拿到的必须是一份稳定的快照。
+     * 规模是「这个人解锁过的物品数」，正常玩几百条，不会长到需要分页。
+     *
+     * <p>⚠️ 只存**显式解锁**的那些。有种子价的原版物品不算解锁（见
+     * {@code UnlockRules#requiresUnlock}）—— 它们本来就不上锁，
+     * 存进来只会让这份表从几百条涨到一千三百条，而且数据包一改就得跟着迁移。
+     */
+    public static final DeferredHolder<AttachmentType<?>, AttachmentType<Set<ResourceLocation>>> UNLOCKED =
+            ATTACHMENT_TYPES.register("unlocked",
+                    () -> AttachmentType.builder(() -> Set.<ResourceLocation>of())
+                            .serialize(UNLOCKED_CODEC)
                             .copyOnDeath()
                             .build());
 

@@ -185,8 +185,7 @@ class StockGuiLayoutTest {
 
     /** 行情页的所有块仍然都在内容区里（新块不能把别人顶出去）。 */
     @Test
-    void marketBlocksStayInsideTheContentArea() {
-        for (int[] screen : SCREENS) {
+    void marketBlocksStayInsideTheContentArea() {        for (int[] screen : SCREENS) {
             String where = screen[0] + "x" + screen[1];
             Layout l = StockGuiLayout.compute(screen[0], screen[1]);
             Rect content = l.content();
@@ -199,6 +198,53 @@ class StockGuiLayoutTest {
                 assertTrue(block.y() >= content.y() - 1 && block.bottom() <= content.bottom() + 1,
                         where + "：" + block + " 纵向越出内容区");
             }
+        }
+    }
+
+    /**
+     * 四个页签（回收 / 行情 / 购买 / 解锁）在**最窄面板**上仍然放得下且互不重叠。
+     *
+     * <p>这条是加第四页时最容易踩的：{@code tabW} 会被 {@link StockGuiLayout#TAB_MIN_W} 夹住，
+     * 面板一窄就变成「4 × 64 + 3 × 4 = 268px」的固定宽度 —— 如果可用宽度不够，
+     * 页签会越过面板右边（看起来就是「最后一个页签被裁掉一半」）。
+     */
+    @Test
+    void fourTabsFitOnTheNarrowestPanel() {
+        for (int[] screen : SCREENS) {
+            String where = screen[0] + "x" + screen[1];
+            Layout l = StockGuiLayout.compute(screen[0], screen[1]);
+            assertEquals(StockGuiLayout.TAB_COUNT, l.tabs().length,
+                    where + "：页签数量必须跟着 TAB_COUNT 走（别再写死 3）");
+            Rect panel = l.panel();
+            Rect prev = null;
+            for (Rect tab : l.tabs()) {
+                assertTrue(tab.x() >= panel.x() && tab.right() <= panel.right(),
+                        where + "：页签越出面板 " + tab);
+                assertTrue(tab.w() >= StockGuiLayout.TAB_MIN_W, where + "：页签窄到放不下两个字 " + tab);
+                assertTrue(tab.bottom() <= l.content().y(),
+                        where + "：页签下沿压到了内容区（内容区就是从页签下沿开始的）");
+                if (prev != null) {
+                    assertTrue(tab.x() >= prev.right() + StockGuiLayout.TAB_GAP - 0,
+                            where + "：相邻页签之间没有留出 TAB_GAP");
+                }
+                prev = tab;
+            }
+        }
+    }
+
+    /**
+     * 解锁页直接复用回收页的几何（投放区 / 状态块 / 按钮 / 说明块）。
+     *
+     * <p>守这条是因为两页**共用同一个容器**：坐标一旦分家，切页时玩家会看到东西「跳」一下，
+     * 而 {@code StockMenu#slotRect} 又会按另一套矩形摆槽 —— 表现就是「东西还在，但点不到」。
+     */
+    @Test
+    void unlockPageReusesTheRecycleGeometry() {
+        for (int[] screen : SCREENS) {
+            Layout l = StockGuiLayout.compute(screen[0], screen[1]);
+            assertEquals(l.barInfo(), l.unlockInfo(), "解锁页的状态块必须就是回收页的合计块");
+            assertEquals(l.recycleBtn(), l.unlockBtn(), "解锁按钮必须就是回收按钮那块");
+            assertEquals(l.barDetail(), l.unlockDetail(), "解锁说明块必须就是回收明细块");
         }
     }
 }

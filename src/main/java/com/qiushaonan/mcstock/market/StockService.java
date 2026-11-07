@@ -107,6 +107,9 @@ public final class StockService {
                 (id, inventory, p) -> new StockMenu(id, inventory),
                 Component.translatable("gui.mcstock.title")));
         sendSnapshot(player, "");
+        // 已解锁表**跟着界面走**：进界面推一次，之后只在解锁成功时推（低频数据，
+        // 绝不能塞进每 2 秒一次的行情快照里 —— 那会让每次跳价都多背几百个物品 id）
+        sendUnlocked(player);
     }
 
     /** 关掉界面时由菜单调用，用来收尾（目前只是把回收栏里的东西还回去）。 */
@@ -707,6 +710,182 @@ public final class StockService {
         return total;
     }
 
+    // ==================== 解锁 ====================
+
+    /**
+     * 这个玩家已经解锁了哪些物品（不可变快照，可以安全地跨线程读）。
+     *
+     * <p>⚠️ 只包含**显式解锁**的条目。有种子价的原版物品不在里面 ——
+     * 它们本来就不上锁，判断要经过 {@link #isUnlocked(ServerPlayer, ResourceLocation)}。
+     */
+    public static java.util.Set<ResourceLocation> unlocked(ServerPlayer player) {
+        java.util.Set<ResourceLocation> set = player.getData(ModAttachments.UNLOCKED.get());
+        return set == null ? java.util.Set.of() : set;
+    }
+
+    /**
+     * 这个物品**现在能不能买**（在价格合法之后、扣钱之前的最后一道门）。
+     *
+     * <p>口径全部由 {@link UnlockRules#requiresUnlock} 决定：
+     * <ul>
+     *   <li>数据包写了价的原版物品 → 永远解锁（它们是购买页的基础物资，也是兑换尺度的锚）；</li>
+     *   <li>推导价 &lt; 500 金币的模组物品 → 不上锁（买了也不构成「跳级」）；</li>
+     *   <li>其余 → 必须在这个玩家的已解锁集合里。</li>
+     * </ul>
+     * ⚠️ 估值表整个没建起来时 {@link ItemValuator#origin} 一律返回 {@code NONE}，
+     * 那会被判成「不是种子 → 要解锁」。所以价格 &lt;= 0 的情况必须在调用方就被挡掉
+     * （{@code requiresUnlock} 对 0 价返回 {@code false}，这里再挡一次也不会误封）。
+     */
+    public static boolean isUnlocked(ServerPlayer player, ResourceLocation id) {
+        if (id == null) {
+            return false;
+        }
+        int price = ItemValuator.purchasePrice(id);
+        ItemValuator.Origin origin = ItemValuator.origin(id);
+        boolean seeded = origin.source() == ItemValuator.Source.ITEM_SEED
+                || origin.source() == ItemValuator.Source.TAG_SEED;
+        return !UnlockRules.requiresUnlock(price, seeded) || unlocked(player).contains(id);
+    }
+
+    /**
+     * 解锁：把投放区（= 回收栏那 18 格）里**凑满一组的物品**各消耗一组，换永久购买资格。
+     *
+     * <p>⚠️ 三条「不静默吞东西」的规矩（单测在 {@code UnlockRulesTest}）：
+     * <ol>
+     *   <li>只消耗**恰好一组**，多出来的原样留在投放区；</li>
+     *   <li>不足一组的物品**一件都不动**（不让玩家「先交一半」）；</li>
+     *   <li>已解锁 / 本来就不上锁的物品**一件都不动**（否则点一下就把东西吞了）。</li>
+     * </ol>
+     *
+     * <p>物品是按 <b>{@code getMaxStackSize()}</b> 判定「一组」的 —— 那是游戏自己给的批量定义，
+     * 模组改成 16 或 1 也自动跟着走，不需要任何配置。
+     */
+    public static void unlock(ServerPlayer player) {
+        if (!(player.containerMenu instanceof StockMenu menu)) {
+            return;
+        }
+        var bar = menu.bar();
+
+        // ① 先把投放区按「物品 → 总件数」聚起来（跨格子累加，不强求一组放在同一格）
+        Map<ResourceLocation, Integer> counts = new LinkedHashMap<>();
+        for (int i = 0; i < bar.getContainerSize(); i++) {
+            ItemStack stack = bar.getItem(i);
+            if (stack.isEmpty()) {
+                continue;
+            }
+            ResourceLocation id = BuiltInRegistries.ITEM.getKey(stack.getItem());
+            if (id != null) {
+                counts.merge(id, stack.getCount(), Integer::sum);
+            }
+        }
+        if (counts.isEmpty()) {
+            flash(player, "message.mcstock.unlock.nothing");
+            sendSnapshot(player, "");
+            return;
+        }
+
+        // ② 算计划：need = 堆叠上限，already = 不用再解锁（已解锁 or 本来不上锁）
+        List<UnlockRules.Candidate> plan = UnlockRules.plan(counts,
+                StockService::stackLimit, id -> isUnlocked(player, id));
+
+        int ready = UnlockRules.readyCount(plan);
+        if (ready == 0) {
+            // 一件都不够：报「最接近的那一件」差多少，别只说一句「不行」
+            UnlockRules.Candidate closest = null;
+            for (UnlockRules.Candidate c : plan) {
+                if (c.already() || c.have() <= 0) {
+                    continue;
+                }
+                if (closest == null || c.missing() < closest.missing()) {
+                    closest = c;
+                }
+            }
+            if (closest == null) {
+                flash(player, "message.mcstock.unlock.already");
+            } else {
+                flash(player, "message.mcstock.unlock.short",
+                        new ItemStack(BuiltInRegistries.ITEM.get(closest.item())).getHoverName(),
+                        closest.have(), closest.need());
+            }
+            sendSnapshot(player, "");
+            return;
+        }
+
+        // ③ 逐个消耗「恰好一组」并记进附件
+        java.util.Set<ResourceLocation> next = new java.util.HashSet<>(unlocked(player));
+        int unlockedNow = 0;
+        Item lastName = null;
+        for (UnlockRules.Candidate c : plan) {
+            if (!c.complete()) {
+                continue;
+            }
+            Item item = BuiltInRegistries.ITEM.get(c.item());
+            if (item == null || item == net.minecraft.world.item.Items.AIR) {
+                continue;
+            }
+            consume(bar, item, c.need());
+            next.add(c.item());
+            unlockedNow++;
+            lastName = item;
+        }
+
+        // ⚠️ 整份替换：附件是 copyOnDeath 的，序列化拿到的必须是一份稳定的快照
+        player.setData(ModAttachments.UNLOCKED.get(), java.util.Set.copyOf(next));
+        bar.setChanged();
+
+        if (unlockedNow == 1 && lastName != null) {
+            flash(player, "message.mcstock.unlock.done_one", lastName.getHoverName());
+        } else {
+            flash(player, "message.mcstock.unlock.done", unlockedNow);
+        }
+        sendUnlocked(player);
+        sendSnapshot(player, "");
+    }
+
+    /**
+     * 这个物品「一组」是多少（{@code getMaxStackSize()}）。
+     *
+     * <p>查不到 / AIR 一律按 1：宁可让门槛变松（一组=1），也不要因为一个坏 id
+     * 让整页解锁抛异常 —— 这条路和 {@link StockService#purchase} 一样，是玩家点一下就会走的。
+     */
+    private static int stackLimit(ResourceLocation id) {
+        Item item = BuiltInRegistries.ITEM.get(id);
+        if (item == null || item == net.minecraft.world.item.Items.AIR) {
+            return 1;
+        }
+        return Math.max(1, new ItemStack(item).getMaxStackSize());
+    }
+
+    /**
+     * 从投放区里**正好**拿走 {@code amount} 个某种物品（从前往后扣，扣满就停）。
+     *
+     * <p>⚠️ 不能整格清空：玩家可能把 3 组堆在同一格里，我们只该拿走一组。
+     * 空掉的格子必须置 {@link ItemStack#EMPTY}（而不是 shrink 到 0 的残留栈），
+     * 否则原版容器会显示一个「0 个」的鬼影格。
+     */
+    private static void consume(net.minecraft.world.SimpleContainer bar, Item item, int amount) {
+        int left = amount;
+        for (int i = 0; i < bar.getContainerSize() && left > 0; i++) {
+            ItemStack stack = bar.getItem(i);
+            if (stack.isEmpty() || stack.getItem() != item) {
+                continue;
+            }
+            int take = Math.min(left, stack.getCount());
+            stack.shrink(take);
+            left -= take;
+            if (stack.isEmpty()) {
+                bar.setItem(i, ItemStack.EMPTY);
+            }
+        }
+    }
+
+    /** 把这个玩家的已解锁表整份推给客户端（进界面、解锁成功后各一次）。 */
+    public static void sendUnlocked(ServerPlayer player) {
+        java.util.Set<ResourceLocation> set = unlocked(player);
+        PacketDistributor.sendToPlayer(player, new com.qiushaonan.mcstock.network.S2CUnlocked(
+                List.copyOf(set)));
+    }
+
     // ==================== 购买 ====================
 
     /** 购买：价格 = 估价 × 1.18，物品直接进背包（塞不下掉脚下）。{@code count <= 0} 表示一组。 */
@@ -729,6 +908,13 @@ public final class StockService {
             flash(player, com.qiushaonan.mcstock.StockEvents.valuesUnavailable()
                     ? "message.mcstock.values_unavailable"
                     : "message.mcstock.purchase_unsellable");
+            sendSnapshot(player, "");
+            return;
+        }
+        // ⚠️ 解锁门在**扣钱之前**：先判资格再判余额 —— 不然玩家会看到「余额不足」，
+        //    去赚钱回来还是买不了，白跑一趟（这条顺序是有意的，别对调）。
+        if (!isUnlocked(player, itemId)) {
+            flash(player, "message.mcstock.unlock.locked", item.getDescription());
             sendSnapshot(player, "");
             return;
         }

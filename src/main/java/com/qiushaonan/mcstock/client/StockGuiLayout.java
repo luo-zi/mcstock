@@ -39,6 +39,8 @@ public final class StockGuiLayout {
 
     public static final int TITLE_H = 18;
     public static final int TAB_H = 16;
+    /** 页签数量：回收 / 行情 / 购买 / 解锁。**所有按页签循环的地方都读它**，别再写 3。 */
+    public static final int TAB_COUNT = 4;
     public static final int TAB_MIN_W = 64;
     /** 页签宽度按面板宽度的 1/6 取，并夹在这个上限内。 */
     public static final int TAB_MAX_W = 160;
@@ -846,6 +848,33 @@ public final class StockGuiLayout {
         }
 
         /**
+         * 解锁页沿用的三块矩形：状态块、按钮、说明块。
+         *
+         * <p>⚠️ 解锁页**故意和回收页共用一套几何**（投放区 / 状态块 / 按钮 / 明细框的位置一模一样），
+         * 不是为了少写代码，而是因为这两页在语义上是同一个动作的两种结算
+         * （交出物品 → 换钱 / 换购买资格）。共用几何有两个直接好处：
+         * <ol>
+         *   <li>{@code planRecycle} 那套「放不下就降级」的档位逻辑（NORMAL / MERGED_INFO / COMPACT）
+         *       已经在小窗口上被实测磨过一遍，解锁页直接继承，不需要再写一份并各自漂移；</li>
+         *   <li>玩家在两页之间切换时，投放区**坐标不动**，东西看着还在原地。</li>
+         * </ol>
+         * 状态块在 COMPACT 档会被折成 0×0（和回收页一样），绘制端必须先判尺寸再画。
+         */
+        public Rect unlockInfo() {
+            return barInfo;
+        }
+
+        /** 解锁按钮（与回收按钮同一个矩形；两页互斥，不会同时出现）。 */
+        public Rect unlockBtn() {
+            return recycleBtn;
+        }
+
+        /** 解锁说明/预览块（与回收明细同一个矩形，行数同为 {@link #detailLines()}）。 */
+        public Rect unlockDetail() {
+            return barDetail;
+        }
+
+        /**
          * 回收明细一行的三列矩形（{@code col}：0 = 物品×数量，1 = 单价，2 = 小计）。
          *
          * <p>⚠️ 玩家要求「另外写清楚单价和总价」，于是每行从两段（名称 / 件数）改成三列。
@@ -1166,12 +1195,16 @@ public final class StockGuiLayout {
         Rect condBtn = new Rect(helpBtn.x() - HELP_CLOSE_GAP - COND_BTN_W, closeBtn.y(),
                 COND_BTN_W, CLOSE_SIZE);
 
-        int tabW = clamp(panelW / 6, TAB_MIN_W, TAB_MAX_W);
-        int tabsW = tabW * 3 + TAB_GAP * 2;
+        // ⚠️ 页签数量：回收 / 行情 / 购买 / 解锁 共 4 个，所以除数从 6 改成 8（见 TAB_MIN_W 的注释）。
+        //    最窄面板 320 时 tabW 被 TAB_MIN_W 夹到 64，四页签共 64×4 + 4×3 = 268px，
+        //    可用宽度 = 320 − 2×CONTENT_PAD = 304px —— 还剩 36px，不会挤出去
+        //    （StockGuiLayoutTest#fourTabsFitOnMinimumPanel 守着这一条）。
+        int tabW = clamp(panelW / 8, TAB_MIN_W, TAB_MAX_W);
+        int tabsW = tabW * TAB_COUNT + TAB_GAP * (TAB_COUNT - 1);
         int tabX0 = px + Math.max(CONTENT_PAD, (panelW - tabsW) / 2);
         int tabY = py + TITLE_H + TAB_ROW_GAP;
-        Rect[] tabs = new Rect[3];
-        for (int i = 0; i < 3; i++) {
+        Rect[] tabs = new Rect[TAB_COUNT];
+        for (int i = 0; i < TAB_COUNT; i++) {
             tabs[i] = new Rect(tabX0 + i * (tabW + TAB_GAP), tabY, tabW, TAB_H);
         }
 

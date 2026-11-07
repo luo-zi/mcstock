@@ -79,6 +79,15 @@ public class StockMenu extends AbstractContainerMenu {
     public static final int PAGE_MARKET = 1;
     /** 购买页：只摆玩家背包（网格不是容器槽，是点一下直接下单的区域）。 */
     public static final int PAGE_SHOP = 2;
+    /**
+     * 解锁页：投放区（回收栏那 18 格）+ 玩家背包。
+     *
+     * <p>⚠️ 这一页**复用回收栏容器**（{@link #bar()}）而不是新开一个 18 格容器：
+     * 两个动作的本质都是「把东西交出去」，区别只在结算方式（换钱 / 换购买资格）。
+     * 新开容器要动 {@code addSlot} 的下标对齐（见类注释里「不要增删槽位」那条），
+     * 而共用容器只需要在 {@link #slotRect} 里多认一个页号 —— 风险差一个量级。
+     */
+    public static final int PAGE_UNLOCK = 3;
 
     /**
      * 「屏幕外」坐标。取 -10000 而不是 -1000：原版命中判定是
@@ -180,11 +189,12 @@ public class StockMenu extends AbstractContainerMenu {
      */
     private static StockGuiLayout.Rect slotRect(int page, int index, StockGuiLayout.Layout layout) {
         if (index < BAR_SLOTS) {
-            // 回收栏只在回收页出现，摆到屏幕外时物品照样留在容器里，切回来还在
-            return page == PAGE_RECYCLE ? StockGuiLayout.barSlot(layout, index) : OFFSCREEN_RECT;
+            // 投放区在回收页与解锁页都出现（同一个容器、同一套矩形）；摆到屏幕外时物品照样留在容器里
+            return page == PAGE_RECYCLE || page == PAGE_UNLOCK
+                    ? StockGuiLayout.barSlot(layout, index) : OFFSCREEN_RECT;
         }
         int playerIndex = index - BAR_SLOTS;    // 0..26 = 主背包，27..35 = 快捷栏
-        if (page == PAGE_RECYCLE) {
+        if (page == PAGE_RECYCLE || page == PAGE_UNLOCK) {
             return playerIndex < INV_SLOTS
                     ? StockGuiLayout.invSlot(layout, playerIndex)
                     : StockGuiLayout.hotbarSlot(layout, playerIndex - INV_SLOTS);
