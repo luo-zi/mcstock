@@ -248,6 +248,9 @@ class ItemValuatorTest {
     /** 深链的底层原料：60 金币 = 1 分钟劳动（一个「粗矿」量级的价格）。 */
     private static final int CHAIN_BASE_SEED = 60;
 
+    /** 「开局手里那点钱」：10 分钟劳动 ≈ 600 金币（按 60 金币/分钟）。 */
+    private static final int BOOTSTRAP_CASH = 600;
+
     /**
      * 一条 12 层的「1 个 A → 1 个 B」机器链 —— ATM10 那类整合包的典型形状。
      *
@@ -304,6 +307,11 @@ class ItemValuatorTest {
         // ④ 冷却跟着买价走：1 金币 = 1 秒劳动
         assertEquals(ItemValuator.purchasePrice(top),
                 ItemValuator.cooldownSeconds(ItemValuator.purchasePrice(top)));
+        // ⑤ 开局拿十块钱（10 分钟劳动 ≈ 600 金币）的人**买不到**它 —— 这条是本次改动的
+        //    原始诉求：「不能在开局玩家随便拿到一点东西就能拿去回收了然后搞出一堆后期物品」。
+        assertTrue(ItemValuator.purchasePrice(top) > BOOTSTRAP_CASH,
+                "开局十块钱买不到十二层链的末端，实际 " + ItemValuator.purchasePrice(top)
+                        + " 金币 vs 开局 " + BOOTSTRAP_CASH);
     }
 
     /**
