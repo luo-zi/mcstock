@@ -755,6 +755,12 @@ item.mcstock.<id>        gui.mcstock.<...>        message.mcstock.<...>
       **改地板之后必须看这个数**，锚是 `ItemValuatorTest#floorAboveMaterialCostIsReportedAsAConflict`。
     - **`"item": 0` 的语义是「拉黑」，不是「地板为 0」**（`blocked` 集合）：
       既不算也不收、连配方推导一起废掉。地板为 0 只是「没写地板」，两者别混。
+    - ⚠️ **地板是迭代起点，所以环路会爆**：旧锚语义下无价物品从 0 起步、输入全 0 的配方跳过，
+      环路原地不动；现在 A 引用 B、B 引用 A 会把价一轮轮抬上去。`MAX_VALUE_COINS`（1 亿）
+      是保险丝，撞到就截断并报 WARN。锚是 `ItemValuatorTest#runawayRelaxationIsClampedInsteadOfOverflowing`。
+    - **重建时会核对「地板指向的物品在不在注册表里」**并报 WARN：写整合包地板最常踩的坑是
+      id 拼错 / 模组没装 —— 那种条目**静默不生效**，作者会以为「我明明写了」。
+      核对必须放在 `rebuild`，不能放在 `ItemValueRules`（纯 JVM 单测里没有注册表）。
     - **回收价 = 估价；采购价 = `ceil(估价 × 1.18)`**。1.18 这一档价差是
       「买原料 → 合成 → 回收」永远亏的唯一保证，**别在别处再加摩擦**。
 43. **时间锁（买价的 95%）与采购冷却（= 买价秒数）：两条都由价格推出来，不落盘**（2026-11-09）：

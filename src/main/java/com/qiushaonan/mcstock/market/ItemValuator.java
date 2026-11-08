@@ -209,6 +209,23 @@ public final class ItemValuator {
         // 地板是**起点**：推导只会把值往上顶（见下面的不动点），不会压下来
         table.putAll(floors);
 
+        // ⚠️ 地板写了一个**这个整合包里不存在**的物品 id（拼错 / 模组没装 / 换了分支）时，
+        //    它会静默不生效 —— 而作者很可能以为「我明明写了地板，为什么还是 0」。
+        //    这里对一次账并报出来。只在 allItems 可用时做（纯 JVM 单测里传的是小集合）。
+        if (allItems != null && !floors.isEmpty()) {
+            List<String> unknown = new ArrayList<>();
+            for (ResourceLocation item : new TreeSet<>(floors.keySet())) {
+                if (!allItems.contains(item)) {
+                    unknown.add(item.toString());
+                }
+            }
+            if (!unknown.isEmpty()) {
+                LOGGER.warn("[mcstock] 有 {} 条地板指向整合包里不存在的物品（拼错或模组没装，这些条目不会生效）：{}{}",
+                        unknown.size(), String.join(", ", unknown.subList(0, Math.min(5, unknown.size()))),
+                        unknown.size() > 5 ? " …" : "");
+            }
+        }
+
         // 所有物品都参与推导 —— 有地板的也参与。这是「地板 vs 锚」的分水岭：
         //    锚是「我说了算，别推」，地板是「推出来更高就用推出来的」。
         //    正是这条让地板能**向下游传播**：锭有地板 → 块/合金/装备全都跟着起来。
