@@ -1,4 +1,4 @@
-"""估值表键位自查：`item_values/core.json` 里的每个键必须真的存在。
+"""估值表键位自查：`item_values/*.json` 里的每个键必须真的存在。
 
 历史背景（2026-10-06 玩家实测漏洞）：估值表写错键**不会报错**，只会静默失效 ——
 最坑的一次是把**方块标签**（`#minecraft:base_stone_overworld`、`#minecraft:crops`）写进了
@@ -8,6 +8,10 @@
 本脚本对着 `build/moddev/artifacts/*client-extra*.jar`（里面装着原版数据与语言文件）校验：
   * `#xxx:yyy` 必须是 `data/minecraft/tags/item/yyy.json` 里真实存在的**物品**标签；
   * `xxx:yyy` 必须在原版语言里有 `item.minecraft.yyy` 或 `block.minecraft.yyy` 条目。
+
+⚠️ 只校验 `minecraft:` 命名空间的键。模组物品（`allthemodium:` 之类，见 `atm10.json`）
+在原版数据里当然查不到，它们的正确性由运行期 `/mcstock audit` 与
+`ItemValuator` 的「地板指向不存在的物品」告警来兜。
 
 用法：python tools/check_item_values.py
 退出码 0 = 全部通过（或找不到 client-extra 而跳过）；1 = 有非法键。
@@ -20,7 +24,7 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-TABLE = ROOT / "src/main/resources/data/mcstock/mcstock/item_values/core.json"
+TABLE_DIR = ROOT / "src/main/resources/data/mcstock/mcstock/item_values"
 ARTIFACT_DIR = ROOT / "build/moddev/artifacts"
 
 
@@ -32,14 +36,35 @@ def find_client_extra() -> Path | None:
     return None
 
 
+def namespace_of(key: str) -> str:
+    """`#c:ores/iron` → `c`；`minecraft:dirt` → `minecraft`；不带冒号时算原版。"""
+    body = key[1:] if key.startswith("#") else key
+    return body.split(":", 1)[0] if ":" in body else "minecraft"
+
+
 def main() -> int:
-    table = json.loads(TABLE.read_text(encoding="utf-8"))
-    values: dict[str, int] = table["values"]
+    files = sorted(TABLE_DIR.glob("*.json"))
+    if not files:
+        print("[失败] 估值表目录里一个 json 都没有：", TABLE_DIR)
+        return 1
+
+    values: dict[str, int] = {}
+    skipped_mod: list[str] = []
+    doc_sections = 0
+    for path in files:
+        table = json.loads(path.read_text(encoding="utf-8"))
+        doc_sections += len(table.get("tiers", {}))
+        for key, value in table.get("values", {}).items():
+            if namespace_of(key) != "minecraft":
+                skipped_mod.append(key)
+                continue
+            values[key] = value
 
     jar = find_client_extra()
     if jar is None:
         print("[跳过] 找不到 client-extra（先跑一次 .\\gradlew.bat build 生成它）：", ARTIFACT_DIR)
-        print(f"       表里有 {len(values)} 个键；分档文档 {len(table.get('tiers', {}))} 段")
+        print(f"       {len(files)} 个文件、{len(values)} 个原版键、跳过 {len(skipped_mod)} 个模组键；"
+              f"分档文档 {doc_sections} 段")
         return 0
 
     with zipfile.ZipFile(jar) as zf:
@@ -62,8 +87,10 @@ def main() -> int:
             if f"item.minecraft.{name}" not in en_us and f"block.minecraft.{name}" not in en_us:
                 bad_items.append(key)
 
-    print(f"估值表：{len(values)} 个键（物品 {sum(1 for k in values if not k.startswith('#'))}、"
-          f"标签 {sum(1 for k in values if k.startswith('#'))}）")
+    print(f"{len(files)} 个文件：{len(values)} 个原版键"
+          f"（物品 {sum(1 for k in values if not k.startswith('#'))}、"
+          f"标签 {sum(1 for k in values if k.startswith('#'))}），"
+          f"跳过 {len(skipped_mod)} 个模组键")
     print(f"原版物品标签共 {len(item_tags)} 个")
     failed = False
     if bad_tags:
@@ -77,7 +104,7 @@ def main() -> int:
         for key in bad_items:
             print("    .", key)
     if not failed:
-        print("[OK] 每个键都指向真实存在的物品 / 物品标签")
+        print("[OK] 每个原版键都指向真实存在的物品 / 物品标签")
     print("结果：" + ("**失败**" if failed else "**通过**"))
     return 1 if failed else 0
 

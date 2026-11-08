@@ -149,6 +149,26 @@ class UnlockRulesTest {
         assertEquals(2850L, UnlockRules.requiredPlaySeconds(3000));
     }
 
+    /**
+     * 时间上限：再贵的物品也最多等 24 小时。
+     *
+     * <p>为什么必须有这条：地板模型把整合包后期物品抬到几十万甚至上百万金币，
+     * 而这条路是「价格 × 0.95 秒」—— 一个 ATM Star 会算出「再玩 110 天」，
+     * 那不是难度，是坏掉的提示（玩家只会认为按钮坏了）。
+     * 封在一天以内之后，「干等」对超后期物品依然是下策，交付仍然更快。
+     */
+    @Test
+    void timeLockIsCappedAtOneDay() {
+        long day = UnlockRules.MAX_REQUIRED_PLAY_SECONDS;
+        assertEquals(24 * 60 * 60, day, "上限就是一天");
+        assertEquals(950L, UnlockRules.requiredPlaySeconds(1000), "上限以下照旧：价格 × 0.95");
+        assertEquals(day, UnlockRules.requiredPlaySeconds(100_000), "十万金币也只等一天");
+        assertEquals(day, UnlockRules.requiredPlaySeconds(10_000_000), "一千万金币同样只等一天");
+        // 恰好卡在边界上：让 0.95 × price 正好等于一天的那个价格点
+        assertEquals(day, UnlockRules.requiredPlaySeconds((int) Math.ceil(day / UnlockRules.TIME_LOCK_FRACTION)));
+        assertEquals(day - 1, UnlockRules.requiredPlaySeconds((int) Math.floor((day - 1) / UnlockRules.TIME_LOCK_FRACTION)));
+    }
+
     @Test
     void lockedUntilEitherDeliveredOrOldEnough() {
         int price = 3000;

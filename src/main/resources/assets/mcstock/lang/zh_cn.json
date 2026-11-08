@@ -221,6 +221,7 @@
   "message.mcstock.pos_full": "仓位已满（最多 %s 个），先平掉几个再开",
   "message.mcstock.purchase_no_cash": "余额不够（需要 %s）",
   "message.mcstock.purchase_cooldown": "%s 还在冷却中 —— 再等 %s 分钟才能再买（越贵的东西买得越少）",
+  "message.mcstock.purchase_cooldown_hours": "%s 还在冷却中 —— 再等 %s 小时才能再买（最贵的那批一天只能买一次）",
   "message.mcstock.purchase_unsellable": "这个物品没有估价，买不了",
   "message.mcstock.purchased": "购买 %s ×%s（单价 %s）→ -%s 金币",
   "message.mcstock.recycle_nothing": "回收栏里没有能卖的东西",
@@ -236,6 +237,7 @@
   "message.mcstock.unlock.done": "已解锁 %s 种物品的购买资格",
   "message.mcstock.unlock.done_one": "已解锁 %s 的购买资格",
   "message.mcstock.unlock.locked": "%s 尚未解锁 —— 到「解锁」页交出一整组，或者再玩 %s 分钟自动开放",
+  "message.mcstock.unlock.locked_hours": "%s 尚未解锁 —— 到「解锁」页交出一整组，或者再玩 %s 小时自动开放",
   "message.mcstock.unlock.nothing": "投放区里没有东西",
   "message.mcstock.unlock.short": "%s 只有 %s / %s，还不够一组",
   "message.mcstock.values_unavailable": "估值暂不可用（行情界面照常能用，价格与仓位不受影响；重进服务器或让服主 /reload 一次即可恢复）"

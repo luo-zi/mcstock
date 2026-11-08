@@ -259,6 +259,8 @@ public final class StockEvents {
                 () -> StockService.sendSnapshot(player, ""));
     }
 
+    private static final org.slf4j.Logger LOGGER = com.mojang.logging.LogUtils.getLogger();
+
     /**
      * 用当前估值规则 + 配方图重建估值表。
      *
@@ -273,7 +275,7 @@ public final class StockEvents {
                     for (Item item : BuiltInRegistries.ITEM) {
                         allItems.add(BuiltInRegistries.ITEM.getKey(item));
                     }
-                    ItemValuator.rebuild(ItemValueRules.itemSeeds(), ItemValueRules.tagSeeds(),
+                    ItemValuator.rebuild(modPresentSeeds(allItems), ItemValueRules.tagSeeds(),
                             tagMembers(), allItems, graph);
                     valuesBuilt = true;
                     return Boolean.TRUE;
@@ -282,6 +284,55 @@ public final class StockEvents {
         valuesUnavailable = !Boolean.TRUE.equals(ok);
         if (valuesUnavailable) {
             valuesBuilt = false;   // 下次登录/启动再试
+        }
+    }
+
+    /**
+     * 剔掉「给一个没装的模组的物品写的地板」。
+     *
+     * <p>为什么需要它：本模组**自带**一份 ATM10 的地板表（{@code item_values/atm10.json}），
+     * 而绝大多数存档里没有 Allthemodium。那些条目本来就不生效，但会触发
+     * {@link ItemValuator} 的「地板指向不存在的物品」告警 —— 每次进世界刷一行假警报，
+     * 真出现拼写错误时反而没人看。
+     *
+     * <p>判定口径：命名空间**既不是一个已加载的模组、注册表里也没有这个物品** → 丢掉。
+     * 反过来说，只要模组装了，写错的 id 仍然会被保留下来并**照常告警**
+     * （那才是我们想让作者看见的错）。
+     */
+    private static Map<ResourceLocation, Integer> modPresentSeeds(Set<ResourceLocation> allItems) {
+        Map<ResourceLocation, Integer> seeds = ItemValueRules.itemSeeds();
+        Map<ResourceLocation, Integer> kept = new java.util.HashMap<>(seeds.size());
+        int dropped = 0;
+        for (Map.Entry<ResourceLocation, Integer> entry : seeds.entrySet()) {
+            ResourceLocation id = entry.getKey();
+            String namespace = id == null ? "" : id.getNamespace();
+            boolean known = id == null
+                    || allItems.contains(id)
+                    || "minecraft".equals(namespace)
+                    || modLoaded(namespace);
+            if (known) {
+                kept.put(id, entry.getValue());
+            } else {
+                dropped++;
+            }
+        }
+        if (dropped > 0) {
+            LOGGER.debug("[mcstock] 忽略 {} 条给未安装模组写的地板", dropped);
+        }
+        return kept;
+    }
+
+    /**
+     * 这个命名空间是不是一个已加载的模组。
+     *
+     * <p>取不到就**当成已加载**（保留条目）：宁可多留一条无效数据，也不要在
+     * 「模组列表还没就绪」这种边角时序里把作者写的整张地板表悄悄丢掉。
+     */
+    private static boolean modLoaded(String namespace) {
+        try {
+            return net.neoforged.fml.ModList.get().isLoaded(namespace);
+        } catch (Throwable e) {
+            return true;
         }
     }
 

@@ -52,6 +52,21 @@ public final class UnlockRules {
      */
     public static final double TIME_LOCK_FRACTION = 0.95;
 
+    /**
+     * 「等时间」这条路的上限：**最多 24 小时**（秒），和 {@code 冷却上限} 同一个数。
+     *
+     * <p>为什么需要它：地板模型把整合包后期物品的价格抬到几十万甚至上百万金币，
+     * 而这条路的时长就是价格 × 0.95 —— 一个 ATM Star 会算出「再玩 110 天」。
+     * 那句话不是难度，是**坏掉的 UI**：玩家看到它只会认为按钮坏了。
+     *
+     * <p>24 小时的语义很清楚：**再贵的东西，最多干等一天**；想更快就交一组证明自己。
+     * 所以这条上限**不会削弱机制** —— 它只是把「干等」这条路封在一天以内，
+     * 让「主动交付」在超后期物品上永远是唯一可行的那条。
+     *
+     * <p>锚：{@code UnlockRulesTest#timeLockIsCappedAtOneDay}。
+     */
+    public static final long MAX_REQUIRED_PLAY_SECONDS = 24 * 60 * 60;
+
     private UnlockRules() {
     }
 
@@ -126,7 +141,7 @@ public final class UnlockRules {
     }
 
     /**
-     * 一个物品要玩多久（**秒**）才自动开放 = 采购价的 95%。
+     * 一个物品要玩多久（**秒**）才自动开放 = 采购价的 95%，**最多 24 小时**。
      *
      * <p>为什么直接用价格：这套经济里 <b>1 金币 ≈ 1 秒劳动</b>（回收价就是「做出它要多少东西」
      * 的度量，冷却也是按这个换算的），所以「价格对应的时长」就是价格本身，
@@ -134,13 +149,16 @@ public final class UnlockRules {
      * 一件 3000 金币的物品要 2850 秒 ≈ 48 分钟游戏时间；
      * 一件 6000 金币的要近 1.6 小时。**回报越贵的东西，等得越久**，这是这条机制的全部内容。
      *
+     * <p>上限见 {@link #MAX_REQUIRED_PLAY_SECONDS}（24 小时）：超后期物品不再无限等下去。
+     *
      * @return 秒；{@code purchasePrice <= 0} 返回 0
      */
     public static long requiredPlaySeconds(int purchasePrice) {
         if (purchasePrice <= 0) {
             return 0;
         }
-        return (long) Math.ceil(purchasePrice * TIME_LOCK_FRACTION);
+        long wanted = (long) Math.ceil(purchasePrice * TIME_LOCK_FRACTION);
+        return Math.min(wanted, MAX_REQUIRED_PLAY_SECONDS);
     }
 
     /**

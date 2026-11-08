@@ -70,6 +70,14 @@
 - 数据包写了 `"item": 0` 就是**拉黑**：不算、不收、不推导
 - 地板高于材料成本会变成印钞机（买原料 → 合成 → 回收稳赚），所以每次建表都会扫一遍，`/mcstock audit` 头部会报**地板冲突**条数
 
+**自带一张 ATM10 地板表**（`item_values/atm10.json`）：给 Allthemodium / Vibranium / Unobtainium
+的原矿与锭、猪巫妖之心写了最低价，块 / 合金 / 装备 / 压缩块全部由配方推导。
+只有装了 Allthemodium 的整合包里才会生效，普通存档里完全无感。
+
+> 定价思路来自 Upgrader items 与 Upgrader: ATM10 Balance（两者均为 All Rights Reserved），
+> 因此**只引用方法、不引用数据**：那张表的数值是本项目按 ATM10 的真实配方自行标定的。
+> 详见 [THIRD_PARTY.md](THIRD_PARTY.md)。
+
 > 一把好用的尺子：**一颗钻石 ≈ 375 块泥土**（50 根木头换不到）。
 
 ---

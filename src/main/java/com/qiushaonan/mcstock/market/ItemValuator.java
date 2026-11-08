@@ -148,6 +148,10 @@ public final class ItemValuator {
         int skipped = 0;
         // 撞到单件上限的物品数（见 MAX_VALUE_COINS）：> 0 说明数据包里有环路
         int clamped = 0;
+        // 写了「但这套环境里不存在」的标签地板（见下面 tagSeeds 循环）
+        List<String> unresolved = new ArrayList<>();
+        // 成功落到物品上的标签地板条数 —— 用来区分「模组没装（全都落空）」和「标签名写错（个别落空）」
+        int resolvedTags = 0;
         Map<ResourceLocation, Integer> table = new HashMap<>();
         // 数据包写的地板（物品 id → 金币）。**地板不是锚**：它不屏蔽配方推导，
         // 只在推导值更低的时候把它托起来。见类注释「地板 ≠ 锚」一节。
@@ -187,9 +191,13 @@ public final class ItemValuator {
                         continue;
                     }
                     Set<ResourceLocation> members = tagMembers.get(seed.getKey());
-                    if (members == null) {
-                        continue;   // 标签没展开成功（比如是方块标签）：当作没写
+                    if (members == null || members.isEmpty()) {
+                        // 标签在这套环境里不存在（模组没装 / 标签名写错）：这条地板**静默无效**。
+                        // 记下来，最后按「全都落空」还是「个别落空」决定报 WARN 还是 DEBUG
+                        unresolved.add("#" + seed.getKey());
+                        continue;
                     }
+                    resolvedTags++;
                     for (ResourceLocation member : members) {
                         if (member == null || blocked.contains(member)) {
                             continue;   // 被物品种子拉黑的，标签地板也别想复活它
@@ -223,6 +231,17 @@ public final class ItemValuator {
                 LOGGER.warn("[mcstock] 有 {} 条地板指向整合包里不存在的物品（拼错或模组没装，这些条目不会生效）：{}{}",
                         unknown.size(), String.join(", ", unknown.subList(0, Math.min(5, unknown.size()))),
                         unknown.size() > 5 ? " …" : "");
+            }
+        }
+        if (!unresolved.isEmpty()) {
+            // 「一条都没落上」= 这些标签所属的模组根本没装（本模组自带的 ATM10 地板表在普通存档里
+            // 就是这种情况）→ 正常现象，别刷 WARN；「有的落上有的没落」= 标签名写错了 → WARN
+            if (resolvedTags > 0) {
+                LOGGER.warn("[mcstock] 有 {} 条标签地板展开不出任何物品（标签名写错或模组没装）：{}{}",
+                        unresolved.size(), String.join(", ", unresolved.subList(0, Math.min(5, unresolved.size()))),
+                        unresolved.size() > 5 ? " …" : "");
+            } else {
+                LOGGER.debug("[mcstock] 本次 {} 条标签地板全部落空（对应模组未安装），已忽略", unresolved.size());
             }
         }
 
@@ -335,12 +354,17 @@ public final class ItemValuator {
     }
 
     /**
-     * 扫一遍「地板冲突」：某条配方产出的东西，按现在的估值卖出去比材料成本还高 → 能套利。
+     * 扫一遍「地板冲突」：买原料 → 合成 → 卖出去**能净赚**的物品。
      *
-     * <p>这与 {@code ExchangeRateTest} 守的是同一条不变量，区别是它现在**在运行期也查**：
-     * 数据包是整合包作者写的，写错一条不能被静默接受（那个后果是玩家印钞）。
+     * <p>真正的套利条件是 {@code 卖出收入 > 买原料的钱}，而买价是
+     * {@code ceil(回收价 × 1.18)} —— 所以比较的是 {@code out × 数量 × 100 > 材料价 × 118}
+     * （用整数放大 100 倍，避免浮点误差把 1.18 算成 1.1799999）。
      *
-     * @return 冲突的物品条数（不是配方条数：一个物品只要有一条配方冲突就算一条）
+     * <p>⚠️ 早期版本只比 {@code out × 数量 > 材料价}，那是**加价前**的口径，
+     * 会把「9 铁粒 → 1 铁锭」这种差 7 个金币的整数除法残差全报成冲突 ——
+     * 一开 ATM10 地板表就是几百条假警报，真正的印钞机反而被淹掉。
+     *
+     * @return 冲突的物品条数（不是配方条数：一个物品只要有一条配方能赚就算一条）
      */
     private static int countFloorConflicts(List<ResourceLocation> targets,
                                            Map<ResourceLocation, List<RecipeGraph.RecipeEntry>> recipes,
@@ -375,7 +399,7 @@ public final class ItemValuator {
                 if (!priced || cost <= 0) {
                     continue;
                 }
-                if ((long) out * recipe.outputCount() > cost) {
+                if ((long) out * recipe.outputCount() * 100L > cost * 118L) {
                     conflicts++;
                     break;
                 }

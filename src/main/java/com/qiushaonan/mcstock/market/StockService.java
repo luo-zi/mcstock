@@ -941,6 +941,17 @@ public final class StockService {
         return Long.toString(Math.max(1, (Math.max(0, seconds) + 59) / 60));
     }
 
+    /** 超过 2 小时的等待改说「小时」：`再玩 1440 分钟` 玩家得自己换算，等于没说。 */
+    private static final long HOUR_THRESHOLD_SECONDS = 2 * 60 * 60;
+
+    private static boolean longWait(long seconds) {
+        return seconds >= HOUR_THRESHOLD_SECONDS;
+    }
+
+    private static String waitHours(long seconds) {
+        return String.format(java.util.Locale.ROOT, "%.1f", Math.max(0, seconds) / 3600.0);
+    }
+
     /**
      * 记一次「买了」。
      *
@@ -1008,15 +1019,19 @@ public final class StockService {
             // 两条路都告诉玩家：交付一组（快），或者干等到自己的游戏时间够（慢但确定）。
             // 报「还要等多久」而不是只说「没解锁」—— 否则玩家会以为这条路是死胡同。
             long need = UnlockRules.requiredPlaySeconds(unit) - playSeconds(player);
-            flash(player, "message.mcstock.unlock.locked", item.getDescription(), waitMinutes(need));
+            // 超后期物品的等待以小时计（上限 24 小时，见 UnlockRules#MAX_REQUIRED_PLAY_SECONDS）
+            flash(player, longWait(need) ? "message.mcstock.unlock.locked_hours" : "message.mcstock.unlock.locked",
+                    item.getDescription(), longWait(need) ? waitHours(need) : waitMinutes(need));
             sendSnapshot(player, "");
             return;
         }
-        // 冷却门：越贵的东西买得越少（时长 = 买价 ÷ 60 分钟）。同样排在余额之前 ——
+        // 冷却门：越贵的东西买得越少（时长 = 买价秒数）。同样排在余额之前 ——
         // 先判「你能不能买」再判「钱够不够」，和上面那条同一个理由。
         long wait = cooldownRemainingSeconds(player, itemId, unit);
         if (wait > 0) {
-            flash(player, "message.mcstock.purchase_cooldown", item.getDescription(), waitMinutes(wait));
+            flash(player, longWait(wait) ? "message.mcstock.purchase_cooldown_hours"
+                            : "message.mcstock.purchase_cooldown",
+                    item.getDescription(), longWait(wait) ? waitHours(wait) : waitMinutes(wait));
             sendSnapshot(player, "");
             return;
         }
