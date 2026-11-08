@@ -150,8 +150,6 @@ public final class ItemValuator {
         int clamped = 0;
         // 写了「但这套环境里不存在」的标签地板（见下面 tagSeeds 循环）
         List<String> unresolved = new ArrayList<>();
-        // 成功落到物品上的标签地板条数 —— 用来区分「模组没装（全都落空）」和「标签名写错（个别落空）」
-        int resolvedTags = 0;
         Map<ResourceLocation, Integer> table = new HashMap<>();
         // 数据包写的地板（物品 id → 金币）。**地板不是锚**：它不屏蔽配方推导，
         // 只在推导值更低的时候把它托起来。见类注释「地板 ≠ 锚」一节。
@@ -197,7 +195,6 @@ public final class ItemValuator {
                         unresolved.add("#" + seed.getKey());
                         continue;
                     }
-                    resolvedTags++;
                     for (ResourceLocation member : members) {
                         if (member == null || blocked.contains(member)) {
                             continue;   // 被物品种子拉黑的，标签地板也别想复活它
@@ -234,9 +231,10 @@ public final class ItemValuator {
             }
         }
         if (!unresolved.isEmpty()) {
-            // 「一条都没落上」= 这些标签所属的模组根本没装（本模组自带的 ATM10 地板表在普通存档里
-            // 就是这种情况）→ 正常现象，别刷 WARN；「有的落上有的没落」= 标签名写错了 → WARN
-            if (resolvedTags > 0) {
+            // 「别的条目一条都没落上」= 这些标签所属的模组根本没装（本模组自带的 ATM10 地板表
+            // 在普通存档里就是这样，物品种子已被 StockEvents 按「模组没装」剔掉）→ 正常现象；
+            // 「别的条目落上了、这几条没落」= 标签名写错了 → 这才是要让作者看见的错
+            if (!floors.isEmpty()) {
                 LOGGER.warn("[mcstock] 有 {} 条标签地板展开不出任何物品（标签名写错或模组没装）：{}{}",
                         unresolved.size(), String.join(", ", unresolved.subList(0, Math.min(5, unresolved.size()))),
                         unresolved.size() > 5 ? " …" : "");

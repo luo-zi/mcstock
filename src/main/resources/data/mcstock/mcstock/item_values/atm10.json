@@ -24,20 +24,27 @@
     "「配方推导 + 关键物品最低价」思路。两者的授权都是 All Rights Reserved，",
     "所以本文件**没有**使用它们的任何配置或数值，是照 ATM10 v8.5 的真实配方自行标定的。",
     "",
-    "这张表只在装了 Allthemodium 的整合包里生效：标签展开不出来、物品 id 不存在时条目会被忽略。"
+    "这张表只在装了 Allthemodium 的整合包里生效：标签展开不出来、物品 id 不存在时条目会被忽略。",
+    "",
+    "为什么锭既写标签又写 id：标签是主力（自动覆盖矿石的所有变体），id 是冗余兜底 ——",
+    "万一哪天约定标签改名，#c:ingots/* 落空，锭这一档仍然有价，块 / 合金 / 装备照旧能推导出来。",
+    "两者数值相同，取 max 不会互相冲突。"
   ],
   "values": {
     "#c:ores/allthemodium": 3000,
     "#c:raw_materials/allthemodium": 3000,
     "#c:ingots/allthemodium": 3000,
+    "allthemodium:allthemodium_ingot": 3000,
 
     "#c:ores/vibranium": 15000,
     "#c:raw_materials/vibranium": 15000,
     "#c:ingots/vibranium": 15000,
+    "allthemodium:vibranium_ingot": 15000,
 
     "#c:ores/unobtainium": 60000,
     "#c:raw_materials/unobtainium": 60000,
     "#c:ingots/unobtainium": 60000,
+    "allthemodium:unobtainium_ingot": 60000,
 
     "allthemodium:piglich_heart": 5000
   }
