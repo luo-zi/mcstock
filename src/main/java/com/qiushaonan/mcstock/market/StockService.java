@@ -746,9 +746,17 @@ public final class StockService {
     /**
      * 这个玩家**累计玩了多少秒**（原版统计 {@code play_time}，单位 tick，÷20 得秒）。
      *
-     * <p>为什么不看存档年龄 / 世界时间：那两条会把「服务器挂机」和「玩家真在玩」混为一谈，
-     * 也会让后进服的玩家凭空占到便宜。原版统计是**按玩家**计的，
-     * 而且死亡、换维度、重进都不会重置 —— 它就是「你在这个世界里真正投入的时间」。
+     * <p>⚠️ <b>时间解锁只认这个数，不认日历时间</b>（别改，这是玩家明确要求的）：
+     * 用「现实天数 / 存档创建日期 / 系统时钟」当判据的话，一个玩家**十几天不玩**，
+     * 上线就发现后期物品全解锁了 —— 他什么进度都没做，却拿到了全部购买资格。
+     *
+     * <p>同理也不看**世界时间**（{@code level.getGameTime()}）：那玩意儿在服务器挂着的时候
+     * 一直在跑，跟「这个人在不在玩」完全无关，还会让后进服的玩家凭空占到便宜。
+     * 原版统计是**按玩家**计的，死亡、换维度、重进都不会重置 ——
+     * 它就是「你在这个世界里真正投入的时间」，挂机也算（挂机是在游戏里，这是可接受的代价）。
+     *
+     * <p>取不到统计时返回 0（= 只走「交一组」那条路）：宁可严一点，也不要因为读不到数据
+     * 就把解锁白送出去。
      */
     public static long playSeconds(ServerPlayer player) {
         try {
@@ -941,15 +949,38 @@ public final class StockService {
         return Long.toString(Math.max(1, (Math.max(0, seconds) + 59) / 60));
     }
 
-    /** 超过 2 小时的等待改说「小时」：`再玩 1440 分钟` 玩家得自己换算，等于没说。 */
+    /**
+     * 等待时长的三档说法：&lt; 2 小时说「分钟」，&lt; 2 天说「小时」，再往上说「天」。
+     *
+     * <p>为什么必须分档：时间解锁现在能开到 30 天（{@link UnlockRules#MAX_REQUIRED_PLAY_SECONDS}），
+     * 「再玩 720.0 小时」玩家得自己换算，「再玩 1440 分钟」更是等于没说。
+     */
     private static final long HOUR_THRESHOLD_SECONDS = 2 * 60 * 60;
-
-    private static boolean longWait(long seconds) {
-        return seconds >= HOUR_THRESHOLD_SECONDS;
-    }
+    private static final long DAY_THRESHOLD_SECONDS = 2 * 24 * 60 * 60;
 
     private static String waitHours(long seconds) {
         return String.format(java.util.Locale.ROOT, "%.1f", Math.max(0, seconds) / 3600.0);
+    }
+
+    /** 天数向上取整：31 天不该显示成「30 天」。 */
+    private static String waitDays(long seconds) {
+        return Long.toString(Math.max(1, (Math.max(0, seconds) + 86399) / 86400));
+    }
+
+    /** 等待文案的语言键（分钟 / 小时 / 天三选一，配合 {@link #waitText} 使用）。 */
+    private static String waitKey(String baseKey, long seconds) {
+        if (seconds >= DAY_THRESHOLD_SECONDS) {
+            return baseKey + "_days";
+        }
+        return seconds >= HOUR_THRESHOLD_SECONDS ? baseKey + "_hours" : baseKey;
+    }
+
+    /** 等待时长的文字（和 {@link #waitKey} 必须成对使用，否则单位会错）。 */
+    private static String waitText(long seconds) {
+        if (seconds >= DAY_THRESHOLD_SECONDS) {
+            return waitDays(seconds);
+        }
+        return seconds >= HOUR_THRESHOLD_SECONDS ? waitHours(seconds) : waitMinutes(seconds);
     }
 
     /**
@@ -1019,9 +1050,10 @@ public final class StockService {
             // 两条路都告诉玩家：交付一组（快），或者干等到自己的游戏时间够（慢但确定）。
             // 报「还要等多久」而不是只说「没解锁」—— 否则玩家会以为这条路是死胡同。
             long need = UnlockRules.requiredPlaySeconds(unit) - playSeconds(player);
-            // 超后期物品的等待以小时计（上限 24 小时，见 UnlockRules#MAX_REQUIRED_PLAY_SECONDS）
-            flash(player, longWait(need) ? "message.mcstock.unlock.locked_hours" : "message.mcstock.unlock.locked",
-                    item.getDescription(), longWait(need) ? waitHours(need) : waitMinutes(need));
+            // 等待可能是「分钟 / 小时 / 天」三档之一（最贵的一档能到 30 天）。
+            // 键与文案必须成对取，否则会出现「再玩 5.9 分钟」这种单位错位。
+            flash(player, waitKey("message.mcstock.unlock.locked", need),
+                    item.getDescription(), waitText(need));
             sendSnapshot(player, "");
             return;
         }
@@ -1029,9 +1061,8 @@ public final class StockService {
         // 先判「你能不能买」再判「钱够不够」，和上面那条同一个理由。
         long wait = cooldownRemainingSeconds(player, itemId, unit);
         if (wait > 0) {
-            flash(player, longWait(wait) ? "message.mcstock.purchase_cooldown_hours"
-                            : "message.mcstock.purchase_cooldown",
-                    item.getDescription(), longWait(wait) ? waitHours(wait) : waitMinutes(wait));
+            flash(player, waitKey("message.mcstock.purchase_cooldown", wait),
+                    item.getDescription(), waitText(wait));
             sendSnapshot(player, "");
             return;
         }

@@ -150,23 +150,33 @@ class UnlockRulesTest {
     }
 
     /**
-     * 时间上限：再贵的物品也最多等 24 小时。
+     * 时间上限：30 天**游戏时间**，只用来兜底数值崩坏，不是给玩家打折。
      *
-     * <p>为什么必须有这条：地板模型把整合包后期物品抬到几十万甚至上百万金币，
-     * 而这条路是「价格 × 0.95 秒」—— 一个 ATM Star 会算出「再玩 110 天」，
-     * 那不是难度，是坏掉的提示（玩家只会认为按钮坏了）。
-     * 封在一天以内之后，「干等」对超后期物品依然是下策，交付仍然更快。
+     * <p>这条用例守的是一次真实的翻车（2026-11-08）：上限一度设成 24 小时，
+     * 理由是「110 天不好看」。结果**所有**后期物品都变成「等一天就能买」——
+     * 一把几万金币的镐和一颗 ATM Star 的等待时长一模一样，解锁机制当场失效。
+     *
+     * <p>所以这里钉住两件事：
+     * <ol>
+     *   <li>上限**明显长于整合包通关时间**（ATM10 这类包普通玩家要十几天），
+     *       否则「干等」就成了绕过进度证明的后门；</li>
+     *   <li>上限之下的部分**完全按价格算**，不许再做任何提前。</li>
+     * </ol>
      */
     @Test
-    void timeLockIsCappedAtOneDay() {
-        long day = UnlockRules.MAX_REQUIRED_PLAY_SECONDS;
-        assertEquals(24 * 60 * 60, day, "上限就是一天");
-        assertEquals(950L, UnlockRules.requiredPlaySeconds(1000), "上限以下照旧：价格 × 0.95");
-        assertEquals(day, UnlockRules.requiredPlaySeconds(100_000), "十万金币也只等一天");
-        assertEquals(day, UnlockRules.requiredPlaySeconds(10_000_000), "一千万金币同样只等一天");
-        // 恰好卡在边界上：让 0.95 × price 正好等于一天的那个价格点
-        assertEquals(day, UnlockRules.requiredPlaySeconds((int) Math.ceil(day / UnlockRules.TIME_LOCK_FRACTION)));
-        assertEquals(day - 1, UnlockRules.requiredPlaySeconds((int) Math.floor((day - 1) / UnlockRules.TIME_LOCK_FRACTION)));
+    void timeLockStopsAtThirtyDays() {
+        long cap = UnlockRules.MAX_REQUIRED_PLAY_SECONDS;
+        assertEquals(30L * 24 * 60 * 60, cap, "上限 30 天");
+        assertTrue(cap > 15L * 24 * 60 * 60,
+                "上限必须明显长于「十几天通关」，否则等于把后期物品全变成等一天");
+
+        // 上限以下：严格按「价格 × 0.95 秒」，一点折扣都不打
+        assertEquals(950L, UnlockRules.requiredPlaySeconds(1000));
+        assertEquals(57000L, UnlockRules.requiredPlaySeconds(60000), "6 万金币 = 15.8 小时，不许压缩");
+        assertEquals(570000L, UnlockRules.requiredPlaySeconds(600_000), "60 万金币 = 6.6 天");
+        // 上限之上：截到 30 天（ATM Star 那一档，效果接近「只能交一组」）
+        assertEquals(cap, UnlockRules.requiredPlaySeconds(100_000_000));
+        assertEquals(cap, UnlockRules.requiredPlaySeconds(ItemValuator.MAX_VALUE_COINS));
     }
 
     @Test

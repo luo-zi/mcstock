@@ -222,6 +222,7 @@
   "message.mcstock.purchase_no_cash": "Not enough cash (need %s)",
   "message.mcstock.purchase_cooldown": "%s is still on cooldown - %s more minute(s) before you can buy it again (the pricier it is, the rarer)",
   "message.mcstock.purchase_cooldown_hours": "%s is still on cooldown - about %s hour(s) before you can buy it again (the most expensive items are one per day)",
+  "message.mcstock.purchase_cooldown_days": "%s is still on cooldown - about %s day(s) before you can buy it again",
   "message.mcstock.purchase_unsellable": "No price for that item",
   "message.mcstock.purchased": "Bought %s x%s (unit %s) -> -%s coins",
   "message.mcstock.recycle_nothing": "Nothing sellable in the recycle bar",
@@ -237,7 +238,8 @@
   "message.mcstock.unlock.done": "Unlocked buying for %s item(s)",
   "message.mcstock.unlock.done_one": "Unlocked buying for %s",
   "message.mcstock.unlock.locked": "%s is not unlocked yet - hand over a full stack on the Unlock page, or play %s more minute(s) to unlock it automatically",
-  "message.mcstock.unlock.locked_hours": "%s is not unlocked yet - hand over a full stack on the Unlock page, or play about %s more hour(s) to unlock it automatically",
+  "message.mcstock.unlock.locked_hours": "%s is not unlocked yet - hand over a full stack on the Unlock page, or accumulate %s more hour(s) of in-game time",
+  "message.mcstock.unlock.locked_days": "%s is not unlocked yet - hand over a full stack on the Unlock page, or accumulate %s more day(s) of in-game time",
   "message.mcstock.unlock.nothing": "The input area is empty",
   "message.mcstock.unlock.short": "%s: only %s / %s, not a full stack yet",
   "message.mcstock.values_unavailable": "Item values are temporarily unavailable (the market screen still works; prices and positions are unaffected - rejoin the server or ask an operator to /reload to restore them)"
