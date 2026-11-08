@@ -17,14 +17,32 @@ import java.util.TreeSet;
  * <p><b>纯 Java</b>（只借了 {@link ResourceLocation} 当物品 id），单测直接调，
  * 真正的配方解析在 {@link MinecraftRecipeGraph}、数据包读取在 {@link ItemValueRules}。
  *
- * <h2>估值的三层优先级</h2>
+ * <h2>估值 = max(配方推导, 地板)</h2>
+ *
+ * <p>这套口径照抄 Upgrader + <i>Upgrader: ATM10 Balance</i>（见 AGENTS.md 记载的取舍）：
+ * 价格**主要靠真实配方推**，数据包只负责给「推不准的关键物品」补一个**地板**。
+ *
  * <ol>
- *   <li><b>物品种子</b>（数据包里直接写 {@code "minecraft:diamond": 40}）；</li>
- *   <li><b>标签种子</b>（{@code "#minecraft:logs": 4}，命中多个标签时取最大）；</li>
- *   <li><b>配方推导</b>：没种子值的物品，按
+ *   <li><b>配方推导</b>（主力）：按
  *       {@code floor(Σ(输入候选中最低估值 × 数量) / 产出数量)} 算，同一产物的所有配方取 min，
- *       反复松弛到不动点（最多 {@link #MAX_PASSES} 轮）。</li>
+ *       反复松弛到不动点（最多 {@link #MAX_PASSES} 轮）；</li>
+ *   <li><b>地板</b>（补丁）：数据包里写的
+ *       <b>物品种子</b>（{@code "minecraft:diamond": 40}）与
+ *       <b>标签种子</b>（{@code "#minecraft:logs": 4}，命中多个标签取最大）
+ *       就是地板 —— 推导值低于它才抬上去，高于它就听推导的；</li>
+ *   <li>推导不出、又没地板 = <b>0</b>：既不可回收也不可购买。
+ *       <b>没有稀有度兜底</b>（这是刻意的：猜出来的价一定错，错的价格比没有价格更糟）。</li>
  * </ol>
+ *
+ * <h2>地板 ≠ 锚（这条是整套改动的关键，别改回去）</h2>
+ * <ul>
+ *   <li><b>锚</b>（旧语义）：种子说多少就是多少，<b>屏蔽</b>配方推导。
+ *       后果是种子不往下游传播，一个「手写价的锭」做成的块、合金、装备全都还是按原料价卖；</li>
+ *   <li><b>地板</b>（现在的语义）：推导照跑，地板只在下面托一下，
+ *       并且因为<b>所有物品都参与推导</b>，地板会顺着配方图往下游<b>传播</b> ——
+ *       锭有地板 → 块 / 合金 / 装备全都跟着起来。ATM10 那种「Allthemodium 锭没有配方」
+ *       的情况正是靠这条救回来的。</li>
+ * </ul>
  *
  * <h2>两条防印钞机的规矩（别删）</h2>
  * <ul>
@@ -36,14 +54,17 @@ import java.util.TreeSet;
  *       产物的估值必须跟着塌到 0，否则同样能套利。</li>
  * </ul>
  *
- * <h2>两条轨道（2026-11-09 起）</h2>
+ * <h2>回收价与采购价</h2>
  * <ul>
- *   <li><b>回收价</b> = {@link #value} = 材料成本（本节开头那套三层优先级 + 两条防印钞规矩）。
- *       <b>一分钱都没动</b>，它是整个经济的地板；</li>
- *   <li><b>采购价</b> = {@link #purchasePrice} = {@code max(材料价 × 1.18, 劳动时间 × 60)}。
- *       第二条支由 {@link LaborTime} 提供，专门解决「模组机器链里 1:1 配方让后期物品
- *       按原料价出售」这个病 —— 详见 {@link ItemValuator#purchasePrice}。</li>
+ *   <li><b>回收价</b> = {@link #value} = 上面那套「max(推导, 地板)」。
+ *       它是整个经济的基准，<b>地板只会把它抬高</b>，绝不压低；</li>
+ *   <li><b>采购价</b> = {@link #purchasePrice} = {@code ceil(回收价 × 1.18)}。
+ *       1.18 这一档买卖价差是「买原料 → 合成 → 回收」永远亏的唯一保证，别在别处再加摩擦。</li>
  * </ul>
+ *
+ * <p>⚠️ <b>地板是这套模型唯一的风险面</b>：地板高于「这条配方的材料成本」时，
+ * 「买原料 → 合成 → 回收」就变成印钞机。所以每次 {@link #rebuild} 都会扫一遍
+ * （{@link #countFloorConflicts}），发现就报 WARN，账目见 {@link #conflictCount()}。
  *
  * <h2>缓存</h2>
  * 整张表放在一个 {@code volatile} 的不可变 map 里，{@link #rebuild} 一次性换掉引用 ——
@@ -62,7 +83,7 @@ public final class ItemValuator {
      * <p>⚠️ 历史：1.15（原版）→ 1.25（2026-10-06 第一次收紧）→ **1.18（同日回调：
  * 玩家反馈「赚钱太难」，买卖价差从 25% 降到 18%）**：
      * 这是「把投机赚到的钱换回物资」唯一的出口，收窄之后「买 → 卖」往返要亏 20%；
-     * 而**回收价一个字没动**（估价 × 1.0）—— 劳动那条路必须保持公平。
+     * 而**回收价一个字没动**（估价 × 1.0）—— 回收那条路必须保持公平。
      * 25% 的差价是回收 / 购买的**唯一**摩擦，别在别处再加一遍，否则「采购 → 回收」两头堵。
      */
     public static final double PURCHASE_MARKUP = 1.18;
@@ -85,13 +106,16 @@ public final class ItemValuator {
     private static volatile Map<ResourceLocation, Origin> origins = Map.of();
 
     /**
-     * **劳动时间表**（物品 → 分钟），采购价的第二条轨道，见 {@link LaborTime}。
+     * **纯推导值**（不含地板），与 {@link #values} 同一次 {@link #rebuild} 里换掉。
      *
-     * <p>⚠️ 与 {@link #values} 是两件事：{@code values} 管**回收价**（材料成本，一分钱没动），
-     * 这张表只管**买价**能不能更高。整张表在同一轮 {@link #rebuild} 里换掉；
-     * 建不起来就是空表，买价自动退回「材料价 × 1.18」那一档 —— 降级，不失效。
+     * <p>只给诊断用（{@code /mcstock audit} 与 {@code /mcstock value}）：整合包作者要能看出
+     * 一个价是「配方推出来的」还是「地板托起来的」，否则改地板就是盲调。
+     * **不参与任何结算**。
      */
-    private static volatile Map<ResourceLocation, Double> labor = Map.of();
+    private static volatile Map<ResourceLocation, Integer> derivedTable = Map.of();
+
+    /** 上一次重建扫出多少条「地板冲突」（地板高于材料成本 = 潜在印钞机）。只给诊断用。 */
+    private static volatile int conflictsSeen = 0;
 
     private ItemValuator() {
     }
@@ -102,9 +126,11 @@ public final class ItemValuator {
      *
      * <p>本方法是幂等的：同样的输入重算多少遍都是同一张表，不依赖上一次的结果。
      *
-     * @param itemSeeds  物品种子（物品 id → 金币）。值 ≤ 0 表示「显式钉死成不可回收」，
-     *                   它会挡住标签种子与配方推导（种子优先级是「物品种子说了算」，不是「取最大」）
-     * @param tagSeeds   标签种子（标签 id → 金币）
+     * @param itemSeeds  物品种子（物品 id → 金币），**语义是地板**：只在推导值更低时托起来。
+     *                   值 ≤ 0 表示另一件事 —— **拉黑**：这件物品既不算也不收，
+     *                   <b>连同它的配方推导一起废掉</b>（地板为 0 只是「没写地板」，
+     *                   拉黑才是「这东西不许有价」，两者别混）
+     * @param tagSeeds   标签种子（标签 id → 金币），同样是地板；≤ 0 表示这条标签不生效
      * @param tagMembers 标签展开表（标签 id → 成员物品），键要和 {@code tagSeeds} 对得上
      * @param allItems   物品全集（一般是 {@code BuiltInRegistries.ITEM.keySet()}）：
      *                   只有在这个集合里的物品才会被推导，集合外的物品一律 0
@@ -120,9 +146,14 @@ public final class ItemValuator {
         //    而调用方在 ServerStarted 上：抛出去会把整个服务端初始化打断。
         //    口径：坏条目跳过 + 计数，最后汇总一条日志；能算的照算。
         int skipped = 0;
+        // 撞到单件上限的物品数（见 MAX_VALUE_COINS）：> 0 说明数据包里有环路
+        int clamped = 0;
         Map<ResourceLocation, Integer> table = new HashMap<>();
-        // 「有种子」的物品不再参与推导 —— 哪怕种子值是 0（0 是有效的「不回收」声明）
-        Set<ResourceLocation> seeded = new HashSet<>();
+        // 数据包写的地板（物品 id → 金币）。**地板不是锚**：它不屏蔽配方推导，
+        // 只在推导值更低的时候把它托起来。见类注释「地板 ≠ 锚」一节。
+        Map<ResourceLocation, Integer> floors = new HashMap<>();
+        // 显式拉黑（{@code "x": 0}）：不算、不收、不推导。给整合包作者留的「关掉某件物品」的出口
+        Set<ResourceLocation> blocked = new HashSet<>();
         // 来源表：只记录「怎么来的」，与 table 的取值完全无关（table 只留 > 0 的项）
         Map<ResourceLocation, Origin> originTable = new HashMap<>();
 
@@ -134,12 +165,14 @@ public final class ItemValuator {
                         skipped++;
                         continue;
                     }
-                    seeded.add(item);
                     Integer value = seed.getValue();
-                    if (value != null && value > 0) {
-                        table.put(item, value);
+                    int declared = value == null ? 0 : value;
+                    if (declared > 0) {
+                        floors.put(item, declared);
+                    } else {
+                        blocked.add(item);   // ≤ 0 = 拉黑，见方法注释
                     }
-                    originTable.put(item, new Origin(Source.ITEM_SEED, null, value == null ? 0 : value));
+                    originTable.put(item, new Origin(Source.ITEM_SEED, null, declared));
                 } catch (RuntimeException e) {
                     skipped++;   // 坏 key（比如自定义 Map 实现里取 key 就抛）：跳过这一条
                 }
@@ -158,12 +191,12 @@ public final class ItemValuator {
                         continue;   // 标签没展开成功（比如是方块标签）：当作没写
                     }
                     for (ResourceLocation member : members) {
-                        if (member == null || seeded.contains(member)) {
-                            continue; // 物品种子优先
+                        if (member == null || blocked.contains(member)) {
+                            continue;   // 被物品种子拉黑的，标签地板也别想复活它
                         }
-                        Integer old = table.get(member);
+                        Integer old = floors.get(member);
                         if (old == null || old < value) {
-                            table.put(member, value); // 命中多个标签取最大
+                            floors.put(member, value); // 命中多个标签取最大
                             originTable.put(member, new Origin(Source.TAG_SEED, seed.getKey(), value));
                         }
                     }
@@ -173,26 +206,18 @@ public final class ItemValuator {
             }
         }
 
-        // 劳动时间表的**锚**：数据包直接写了价的所有物品（物品种子 + 标签种子）。
-        // ⚠️ 不能直接用上面的 `seeded` —— 那只是**物品**种子。原木 / 羊毛 / 木板这些是
-        //    **标签**种子，价格同样由数据包拍板，可是它们不在 seeded 里。不锚住它们的后果：
-        //    它们会走配方推导、白白多付一份工序时间，于是「基础物资」的买价也被抬高 ——
-        //    而涨价只应该发生在深加工链上（见 LaborTime 类注释里「两条轨道共用同一个锚」）。
-        Set<ResourceLocation> anchored = new HashSet<>();
-        for (Map.Entry<ResourceLocation, Integer> priced : table.entrySet()) {
-            Origin origin = originTable.get(priced.getKey());
-            if (origin != null && (origin.source() == Source.ITEM_SEED
-                    || origin.source() == Source.TAG_SEED)) {
-                anchored.add(priced.getKey());
-            }
-        }
+        // 地板是**起点**：推导只会把值往上顶（见下面的不动点），不会压下来
+        table.putAll(floors);
 
-        // 排序：让每轮的遍历顺序固定，同一份数据包在任何机器上算出来的表都一样
-        List<ResourceLocation> derived = new ArrayList<>();
+        // 所有物品都参与推导 —— 有地板的也参与。这是「地板 vs 锚」的分水岭：
+        //    锚是「我说了算，别推」，地板是「推出来更高就用推出来的」。
+        //    正是这条让地板能**向下游传播**：锭有地板 → 块/合金/装备全都跟着起来。
+        //    （被拉黑的除外：它们连推导都不进，见 blocked。）
+        List<ResourceLocation> sweep = new ArrayList<>();
         if (allItems != null) {
             for (ResourceLocation item : new TreeSet<>(allItems)) {
-                if (item != null && !seeded.contains(item) && !table.containsKey(item)) {
-                    derived.add(item);
+                if (item != null && !blocked.contains(item)) {
+                    sweep.add(item);
                 }
             }
         }
@@ -200,7 +225,7 @@ public final class ItemValuator {
         // 只对「真的有配方」的物品做松弛，省掉大部分空转
         Map<ResourceLocation, List<RecipeGraph.RecipeEntry>> recipes = new HashMap<>();
         if (graph != null) {
-            for (ResourceLocation item : derived) {
+            for (ResourceLocation item : sweep) {
                 try {
                     List<RecipeGraph.RecipeEntry> found = graph.recipesFor(item);
                     if (found != null && !found.isEmpty()) {
@@ -233,13 +258,20 @@ public final class ItemValuator {
                     skipped++;      // 这一条推不出来：本轮按 0（不可回收）处理，别把整张表带崩
                     candidate = 0;
                 }
+                // 地板在这里生效：推导值和地板取大的那个。地板为 0（没写）时就是纯推导值。
+                int next = Math.max(candidate, floors.getOrDefault(item, 0));
+                if (next > MAX_VALUE_COINS) {
+                    // 撞上限 = 数据包里有环路（见 MAX_VALUE_COINS）。截断并计数，最后汇总报出来
+                    next = MAX_VALUE_COINS;
+                    clamped++;
+                }
                 Integer old = table.get(item);
                 int current = old == null ? 0 : old;
-                if (candidate == current) {
+                if (next == current) {
                     continue;
                 }
-                if (candidate > 0) {
-                    table.put(item, candidate);
+                if (next > 0) {
+                    table.put(item, next);
                 } else {
                     table.remove(item);
                 }
@@ -250,27 +282,89 @@ public final class ItemValuator {
             }
         }
 
+        // 纯推导值（不含地板）单独留一份：`/mcstock audit` 要能回答
+        // 「这个价是推导出来的，还是地板托起来的」—— 这是整合包作者写地板的唯一依据
+        Map<ResourceLocation, Integer> derivedOnly = new HashMap<>();
+        for (ResourceLocation item : targets) {
+            try {
+                int derivedValue = derive(recipes.get(item), table);
+                if (derivedValue > 0) {
+                    derivedOnly.put(item, derivedValue);
+                }
+            } catch (Throwable e) {
+                // 推不出来就是 0，不影响主表
+            }
+        }
+
         values = Map.copyOf(table);
         origins = Map.copyOf(originTable);
+        derivedTable = Map.copyOf(derivedOnly);
 
-        // 劳动时间表（采购价的第二条轨道）：锚在**种子价**上，按配方图一层层累加工序时间。
-        // ⚠️ 它在估值表**之后**算，因为种子价就是它的锚点；失败了也只是买价不加成，
-        //    绝不影响上面那张回收价表（那条是防印钞机的地板，不能跟着一起塌）。
-        try {
-            labor = LaborTime.compute(table, anchored, recipes, RecipeSteps::minutes);
-        } catch (Throwable e) {
-            skipped++;
-            labor = Map.of();
-            LOGGER.warn("[mcstock] 劳动时间表构建失败，采购价退回「材料价 × 1.18」那一档", e);
-        }
+        // ⚠️ 地板可以造出印钞机：地板高于「这条配方的材料成本」时，「买原料 → 合成 → 回收」
+        //    就变成稳赚。这是地板模型**唯一**的风险，不能静默放过 —— 每次重建都扫一遍并报出来。
+        int conflicts = countFloorConflicts(targets, recipes, table);
+        conflictsSeen = conflicts;
 
-        if (skipped > 0) {
-            LOGGER.warn("[mcstock] 估值表重建完成：{} 项有价（跳过 {} 条坏条目 —— "
-                    + "坏种子 / 坏标签 / 抛异常的配方查询，它们按「无价」处理）", values.size(), skipped);
+        if (skipped > 0 || conflicts > 0 || clamped > 0) {
+            LOGGER.warn("[mcstock] 估值表重建完成：{} 项有价（跳过 {} 条坏条目；"
+                    + "**{} 条地板冲突** —— 地板高于材料成本，那几条是潜在印钞机，"
+                    + "用 /mcstock audit 查，把地板调低或给上游材料补地板；"
+                    + "{} 项撞到单件上限 {} —— 撞了就说明配方图里有环路）",
+                    values.size(), skipped, conflicts, clamped, MAX_VALUE_COINS);
         } else {
             // INFO：这是「购买页目录条数」与「推导价是否正常」的现场证据（真机排障第一条就看它）
-            LOGGER.info("[mcstock] 估值表重建完成：{} 项有价（无跳过）", values.size());
+            LOGGER.info("[mcstock] 估值表重建完成：{} 项有价（无跳过、无地板冲突）", values.size());
         }
+    }
+
+    /**
+     * 扫一遍「地板冲突」：某条配方产出的东西，按现在的估值卖出去比材料成本还高 → 能套利。
+     *
+     * <p>这与 {@code ExchangeRateTest} 守的是同一条不变量，区别是它现在**在运行期也查**：
+     * 数据包是整合包作者写的，写错一条不能被静默接受（那个后果是玩家印钞）。
+     *
+     * @return 冲突的物品条数（不是配方条数：一个物品只要有一条配方冲突就算一条）
+     */
+    private static int countFloorConflicts(List<ResourceLocation> targets,
+                                           Map<ResourceLocation, List<RecipeGraph.RecipeEntry>> recipes,
+                                           Map<ResourceLocation, Integer> table) {
+        int conflicts = 0;
+        for (ResourceLocation item : targets) {
+            Integer out = table.get(item);
+            if (out == null || out <= 0) {
+                continue;
+            }
+            List<RecipeGraph.RecipeEntry> list = recipes.get(item);
+            if (list == null) {
+                continue;
+            }
+            for (RecipeGraph.RecipeEntry recipe : list) {
+                if (recipe == null || recipe.outputCount() <= 0) {
+                    continue;
+                }
+                long cost = 0;
+                boolean priced = true;
+                for (RecipeGraph.Ingredient ingredient : recipe.inputs()) {
+                    if (ingredient == null || ingredient.count() <= 0) {
+                        continue;
+                    }
+                    int unit = cheapest(ingredient.candidates(), table);
+                    if (unit <= 0) {
+                        priced = false;   // 有买不到的材料 → 这条路线根本不成立，算不上套利
+                        break;
+                    }
+                    cost += (long) unit * ingredient.count();
+                }
+                if (!priced || cost <= 0) {
+                    continue;
+                }
+                if ((long) out * recipe.outputCount() > cost) {
+                    conflicts++;
+                    break;
+                }
+            }
+        }
+        return conflicts;
     }
 
     /**
@@ -289,18 +383,17 @@ public final class ItemValuator {
     }
 
     /**
-     * 采购价（金币）= {@code max(ceil(估价 × 1.18), ceil(劳动时间 × 60))}；
-     * 估价为 0 时返回 0（买不到）。
+     * 采购价（金币）= {@code ceil(估价 × 1.18)}；估价为 0 时返回 0（买不到）。
      *
-     * <h2>为什么是两条轨道取 max，而不是替换掉旧公式</h2>
-     * <ul>
-     *   <li><b>旧公式那一支是「防印钞机地板」</b>：买价 ≥ 回收价 × 1.18 保证了
-     *       「买原料 → 合成 → 回收」永远亏。它绝不能失效，否则整个经济被套利吃掉；</li>
-     *   <li><b>劳动时间那一支是「后期物品该贵」</b>：材料成本算不出来的东西
-     *       （模组机器链里那些 1:1 的配方）由它来标价，链越深越贵；</li>
-     *   <li>两者取 {@code max}：**只会更贵，永远不会更便宜** —— 于是旧存档里已经是
-     *       「按材料价买」的东西不会突然变便宜，回收价更是一个字都没动。</li>
-     * </ul>
+     * <h2>为什么必须比回收价贵</h2>
+     * 买价 ≥ 回收价 × 1.18 保证了「买原料 → 合成 → 回收」永远亏 15% 以上 ——
+     * 这是整个经济<b>唯一</b>的防套利闸门。地板模型不改变这条：
+     * 地板托高的是回收价，买价跟着一起抬，价差不变。
+     *
+     * <h2>为什么后期物品现在会贵</h2>
+     * 靠的是地板顺着配方图往下游传播（见类注释「地板 ≠ 锚」），
+     * 而不是另开一条「劳动时间」轨道 —— 后者试过，在 ATM10 里对
+     * 「没有配方」的稀有资源完全失效。
      *
      * <p>用 {@code ceil} 而不是四舍五入：1 金币的东西卖出 1.18 → 收 2 金币，
      * 否则最低价那一档会变成「买进来和卖出去一个价」的免费搬运。
@@ -310,36 +403,44 @@ public final class ItemValuator {
         if (value <= 0) {
             return 0;
         }
-        int byMaterial = (int) Math.ceil(value * PURCHASE_MARKUP);
-        double minutes = laborMinutes(item);
-        if (minutes <= 0) {
-            return byMaterial;
-        }
-        double coins = minutes * LaborTime.COINS_PER_MINUTE;
-        int byLabor = coins >= Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) Math.ceil(coins);
-        return Math.max(byMaterial, byLabor);
+        return (int) Math.ceil(value * PURCHASE_MARKUP);
     }
 
     /**
-     * 做出这个物品要多少**分钟**劳动（0 = 推不出来，买价不加成）。
+     * **纯配方推导值**（不含地板），只给诊断命令看。
      *
-     * <p>口径见 {@link LaborTime}：锚在种子价上（1 金币 = 1 秒劳动），按配方图逐层累加
-     * 工序时间。**只影响买价**，回收价与它无关。
+     * <p>和 {@link #value} 对照就能回答整合包作者唯一关心的问题：
+     * 「这个价是我写的地板托起来的，还是配方本来就推得这么高？」
+     * —— 前者说明地板有用，后者说明地板写多了（白写，还可能造套利）。
+     *
+     * <p><b>不参与任何结算</b>：定价、回收、购买一律走 {@link #value} / {@link #purchasePrice}。
+     *
+     * @return 推导值（金币）；0 = 推不出来（无配方 / 输入无价 / 算出来不足 1 金币）
      */
-    public static double laborMinutes(ResourceLocation item) {
+    public static int derived(ResourceLocation item) {
         if (item == null) {
             return 0;
         }
-        Double minutes = labor.get(item);   // volatile 只读一次，拿到一整版快照
-        return minutes == null ? 0 : minutes;
+        Integer found = derivedTable.get(item);   // volatile 只读一次，拿到的是一整版快照
+        return found == null ? 0 : found;
     }
 
     /**
-     * 买一件要多长时间冷却（**秒**）= 采购价 ÷ 60 分钟 = 采购价秒。
+     * 上一次重建扫出多少条<b>地板冲突</b>（地板高于材料成本 = 潜在印钞机）。
      *
-     * <p>为什么就是价格本身：1 金币 = 1 秒劳动（见 {@link LaborTime#COINS_PER_MINUTE}），
-     * 所以「冷却时长 = 这件东西对应的劳动时间」—— 买入的吞吐量正好等于自己生产的吞吐量。
-     * <b>它们是同一个数，不需要第二个配置项</b>，价格一改冷却自动跟上。
+     * <p>只给 {@code /mcstock audit} 与日志用。它 &gt; 0 不代表世界立刻坏掉
+     * （可能只是那条配方有别的约束，比如需要机器），但**必须有人看一眼**。
+     */
+    public static int conflictCount() {
+        return conflictsSeen;
+    }
+
+    /**
+     * 买一件要多长时间冷却（**秒**）= 采购价秒数（1 金币 ≈ 1 秒劳动量）。
+     *
+     * <p>为什么拿价格当冷却：价格本身就是「这东西值多少劳动」的度量，
+     * 于是买入的吞吐量天然被限制在「自己生产的吞吐量」附近 ——
+     * 不需要第二个配置项，价格一改冷却自动跟上。
      *
      * <p>上限 {@link #MAX_COOLDOWN_SECONDS}（24 小时）：没有上限的话，
      * 一件几十万金币的整合包物品会锁到几个月后，那等同于买不到，玩家只会以为按钮坏了。
@@ -363,6 +464,20 @@ public final class ItemValuator {
     /** 冷却下限：低于这个价格的物品**没有冷却**（见 {@link #cooldownSeconds}）。 */
     public static final int MIN_COOLDOWN_SECONDS = 60;
 
+    /**
+     * 单件估值上限（金币）：**地板作为迭代起点之后的保险丝**。
+     *
+     * <p>旧「锚」语义下不会有这个问题：没有种子的物品从 0 起步，输入全是 0 的配方直接跳过，
+     * 环路原地不动。现在地板是起点，一个「A 用 2 个 B、B 用 1 个 A」这种互相引用的环路
+     * 会把两边的价一轮一轮往上抬 —— 虽然整合包里基本不会出现（配方比例通常互为倒数，
+     * 整数除法会把它压回去），但一旦出现就是把价格迭代到天文数字，
+     * 那时玩家看到的是「这件东西要 3 亿金币」，比崩掉还难查。
+     *
+     * <p>取 1 亿：远高于任何正常玩法的价格（冷却上限 24 小时也只对应 86400 金币/件），
+     * 又远低于 {@code int} 上限，撞到它就说明数据包里有环路，日志会报出来。
+     */
+    public static final int MAX_VALUE_COINS = 100_000_000;
+
     /** 整张估值表的只读快照（购买页要列举可采购物品时用；不要试图修改它）。 */
     public static Map<ResourceLocation, Integer> snapshot() {
         return values;
@@ -377,9 +492,9 @@ public final class ItemValuator {
     public enum Source {
         /** 没有来源：既没种子、也没有能推出 ≥1 金币的配方（查不到价的物品都是这一档）。 */
         NONE,
-        /** 物品种子：数据包在 {@code values} 里直接写了这个物品，它挡住标签种子与配方推导。 */
+        /** 物品种子：数据包在 {@code values} 里直接写了这个物品 —— 它是**地板**，不是锚。 */
         ITEM_SEED,
-        /** 标签种子：命中了 {@code #命名空间:标签}，取所有命中标签里的**最大值**。 */
+        /** 标签种子：命中了 {@code #命名空间:标签}，取所有命中标签里的**最大值**；同样是地板。 */
         TAG_SEED,
         /** 配方推导：按「输入最便宜的候选 × 数量 ÷ 产出」松弛出来的。 */
         DERIVED

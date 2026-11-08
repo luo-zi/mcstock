@@ -1579,11 +1579,11 @@ public class StockScreen extends AbstractContainerScreen<StockMenu> {
         if (price <= 0) {
             return false;
         }
-        // 「玩够时间就自动开放」那条路：判据与服务端是同一份（UnlockRules#isLocked）。
-        // 客户端缺的只有「有没有种子价」这一个信息，猜错的后果是按钮亮着、
-        // 服务端回一句「已经不需要解锁」—— **不会消耗任何物品**（服务端 already 是权威）。
+        // 「玩够时间就自动开放」那条路：判据与服务端是同一份（UnlockRules#isLocked），
+        // 客户端缺的只有「这个玩家交没交过」—— 猜错的后果是按钮亮着、服务端回一句
+        // 「已经不需要解锁」，**不会消耗任何物品**（服务端 already 是权威）。
         return !UnlockRules.isLocked((int) Math.min(Integer.MAX_VALUE, price), false,
-                false, StockClientState.playSeconds);
+                StockClientState.playSeconds);
     }
 
     /** 目录里的单价（**金币**，和 {@code shopPrices} 同口径）；不在目录里返回 0。 */

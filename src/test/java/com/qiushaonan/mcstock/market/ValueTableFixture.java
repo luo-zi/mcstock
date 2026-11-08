@@ -152,18 +152,15 @@ final class ValueTableFixture {
     }
 
     /**
-     * 采购价的**地板支**（金币）= {@code ceil(估值 × PURCHASE_MARKUP)}，与
-     * {@link ItemValuator#purchasePrice} 里那一支逐字相同。
+     * 采购价（金币）= {@code ceil(估值 × PURCHASE_MARKUP)}，与
+     * {@link ItemValuator#purchasePrice} 逐字相同（买价就是这一个公式，没有第二条支）。
      *
-     * <p>⚠️ 真引擎的买价是 {@code max(材料价 × 1.18, 劳动时间 × 60)}，这里只算了第一支 ——
-     * 也就是**下界**。对这两处用例正好够用，而且方向是对的：
+     * <p>用在这两处正好够用：
      * <ul>
      *   <li>{@code exchangeTableIsAnchoredToRarity} 断言的是「换 1 个 X 至少需要多少个泥土」的下限；</li>
      *   <li>{@code buyingIngredientsCannotBeArbitraged} 断言「买原料 → 合成 → 回收」不赚钱 ——
-     *       买价算得比真实值低还能不赚钱，真实值只会更安全。</li>
+     *       这里量的是**地板**给的价，配方推导只会更高，所以我们测的是最宽松的那一侧。</li>
      * </ul>
-     * 想连劳动时间那一支一起量，得把配方图和 {@code RecipeSteps} 搬进纯 JVM 测试里
-     * （那是 {@code ItemValuatorTest} 里那条深链用例干的事）。
      */
     int purchasePrice(String itemId) {
         int value = value(itemId);

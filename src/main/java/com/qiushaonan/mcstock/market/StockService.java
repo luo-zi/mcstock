@@ -727,21 +727,20 @@ public final class StockService {
      * 这个物品**现在能不能买**（在价格合法之后、扣钱之前的最后一道门）。
      *
      * <p>口径全部交给 {@link UnlockRules#isLocked}（服务端与客户端共用那一份），
-     * 这里只负责把四个输入凑出来：买价、是否种子价、是否交付过一组、玩家累计游戏时间。
+     * 这里只负责把三个输入凑出来：买价、是否交付过一组、玩家累计游戏时间。
      *
-     * <p>⚠️ 估值表整个没建起来时 {@link ItemValuator#origin} 一律返回 {@code NONE}，
-     * 那会被判成「不是种子 → 要解锁」。所以价格 &lt;= 0 的情况必须在调用方就被挡掉
-     * （{@code requiresUnlock} 对 0 价返回 {@code false}，这里再挡一次也不会误封）。
+     * <p>⚠️ 现在**不看「有没有种子」**了（那条豁免已经删掉，理由见
+     * {@link UnlockRules#requiresUnlock}）：地板模型下数据包写价的正是应当上锁的关键物品。
+     *
+     * <p>⚠️ 估值表整个没建起来时价格是 0，{@code requiresUnlock} 对 0 返回 {@code false}，
+     * 于是这里不会误封 —— 但也拦不住任何东西，所以调用方仍要在价格 &lt;= 0 时先挡一次。
      */
     public static boolean isUnlocked(ServerPlayer player, ResourceLocation id) {
         if (id == null) {
             return false;
         }
         int price = ItemValuator.purchasePrice(id);
-        ItemValuator.Origin origin = ItemValuator.origin(id);
-        boolean seeded = origin.source() == ItemValuator.Source.ITEM_SEED
-                || origin.source() == ItemValuator.Source.TAG_SEED;
-        return !UnlockRules.isLocked(price, seeded, unlocked(player).contains(id), playSeconds(player));
+        return !UnlockRules.isLocked(price, unlocked(player).contains(id), playSeconds(player));
     }
 
     /**
@@ -908,9 +907,9 @@ public final class StockService {
     // ==================== 采购冷却 ====================
 
     /**
-     * 冷却时长的唯一来源：{@link ItemValuator#cooldownSeconds}（= 买价 ÷ 60 分钟）。
+     * 冷却时长的唯一来源：{@link ItemValuator#cooldownSeconds}（= 买价的秒数）。
      *
-     * <p>⚠️ 时长**不落盘**，只存「上次买的时刻」—— 这样调价（或数据包改了种子）之后
+     * <p>⚠️ 时长**不落盘**，只存「上次买的时刻」—— 这样调价（或数据包改了地板）之后
      * 冷却自动跟着变，不需要写任何存档迁移。
      */
     private static long cooldownTicks(int purchasePrice) {
@@ -973,7 +972,8 @@ public final class StockService {
     // ==================== 购买 ====================
 
     /**
-     * 购买：单价 = {@link ItemValuator#purchasePrice}（{@code max(材料价 × 1.18, 劳动时间 × 60)}），
+     * 购买：单价 = {@link ItemValuator#purchasePrice}（{@code ceil(估价 × 1.18)}；
+     * 估价 = {@code max(配方推导, 地板)}），
      * 物品直接进背包（塞不下掉脚下）。{@code count <= 0} 表示一组。
      *
      * <p>四道门，顺序**不许调换**：能不能买（物品存在）→ 有没有价（估值可用）→

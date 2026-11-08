@@ -92,7 +92,7 @@ class HardeningTest {
         assertDoesNotThrow(() -> rules.apply(files, null, null));
         assertEquals(4, ItemValueRules.tagSeeds().get(LOGS_TAG), "合法标签条目要留下");
         assertEquals(0, ItemValueRules.tagSeeds().getOrDefault(ResourceLocation.parse("minecraft:wool"), -1),
-                "负价格按 0 处理（显式声明不可回收），不是丢掉");
+                "负价格按 0 处理（标签地板只认正数，0/负 = 这条标签不生效），不是丢掉");
         assertTrue(ItemValueRules.tagSeeds().size() >= 2, "非法标签 id 要丢掉而不是抛异常（当前 " + ItemValueRules.tagSeeds() + "）");
     }
 

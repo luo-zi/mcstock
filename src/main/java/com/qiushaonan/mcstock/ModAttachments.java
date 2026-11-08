@@ -71,8 +71,8 @@ public class ModAttachments {
      * 绝不在旧集合上就地改 —— 附件是 copyOnDeath 的，序列化拿到的必须是一份稳定的快照。
      * 规模是「这个人解锁过的物品数」，正常玩几百条，不会长到需要分页。
      *
-     * <p>⚠️ 只存**显式解锁**的那些。有种子价的原版物品不算解锁（见
-     * {@code UnlockRules#requiresUnlock}）—— 它们本来就不上锁，
+     * <p>⚠️ 只存**显式解锁**的那些。便宜物品（买价不到
+     * {@code UnlockRules#MIN_PRICE_TO_LOCK}）不算解锁 —— 它们本来就不上锁，
      * 存进来只会让这份表从几百条涨到一千三百条，而且数据包一改就得跟着迁移。
      */
     public static final DeferredHolder<AttachmentType<?>, AttachmentType<Set<ResourceLocation>>> UNLOCKED =

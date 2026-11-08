@@ -40,13 +40,8 @@ public interface RecipeGraph {
      * @param inputs      输入。工作台配方里的**空格子**在这一层就已经被剔掉了
      *                    （原版用 {@code Ingredient.EMPTY} 占位，它不是「零成本材料」）
      * @param outputCount 产出数量，估值时当除数
-     * @param type        配方类型 id（{@code minecraft:crafting_shaped} / {@code mekanism:enriching} …）。
-     *                    <b>只给「劳动时间」那条轨道用</b>（见 {@link RecipeSteps}）：
-     *                    回收价（{@link ItemValuator#value}）一个字都用不到它，
-     *                    所以老调用方传 {@code null} 也不会改变任何回收价。
-     *                    {@code null} = 未知类型，按 {@link RecipeSteps#DEFAULT_MINECRAFT} 处理
      */
-    record RecipeEntry(List<Ingredient> inputs, int outputCount, ResourceLocation type) {
+    record RecipeEntry(List<Ingredient> inputs, int outputCount) {
 
         public RecipeEntry {
             inputs = List.copyOf(inputs);

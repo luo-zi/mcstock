@@ -18,7 +18,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *
  * <p>守的是三条**不能静默吞玩家东西**的口径（见 {@link UnlockRules} 类注释）：
  * 只消耗恰好一组、不足一组一件不动、已解锁/不需解锁的一件不动。
- * 另外守「是否上锁」那条线：有种子价的原版物品永远不上锁（否则购买页会被清空）。
+ * 另外守「是否上锁」那条线：只看价格，**不看有没有种子**（理由见
+ * {@link UnlockRules#requiresUnlock}）。
  */
 class UnlockRulesTest {
 
@@ -100,24 +101,26 @@ class UnlockRulesTest {
     }
 
     @Test
-    void seededItemsNeverNeedUnlocking() {
-        // 原版种子物品：价格再高也不上锁（它们是购买页的基础物资，也是兑换尺度的锚）
-        assertFalse(UnlockRules.requiresUnlock(5000, true));
-        assertFalse(UnlockRules.requiresUnlock(10, true));
+    void expensiveItemsNeedUnlockingNoMatterWhereThePriceCameFrom() {
+        // ⚠️ 这条钉住的是「地板不再豁免解锁」：ATM10 里 Allthemodium 锭的价格正是
+        //    数据包写的地板（它没有配方），按旧规矩它会被豁免 —— 而那恰好是
+        //    这套机制唯一想拦的东西。现在只看价格。
+        assertTrue(UnlockRules.requiresUnlock(5000), "贵就要解锁，不管价是地板写的还是推出来的");
+        assertFalse(UnlockRules.requiresUnlock(10), "便宜货不上锁");
     }
 
     @Test
-    void cheapDerivedItemsStayBuyable() {
-        assertFalse(UnlockRules.requiresUnlock(UnlockRules.MIN_PRICE_TO_LOCK - 1, false),
-                "低于门槛的推导价物品不该上锁 —— 否则购买页会变成一片灰");
-        assertFalse(UnlockRules.requiresUnlock(0, false), "没有价格 = 不可购买，谈不上解锁");
-        assertFalse(UnlockRules.requiresUnlock(-5, false));
+    void cheapItemsStayBuyable() {
+        assertFalse(UnlockRules.requiresUnlock(UnlockRules.MIN_PRICE_TO_LOCK - 1),
+                "低于门槛的物品不该上锁 —— 否则购买页会变成一片灰");
+        assertFalse(UnlockRules.requiresUnlock(0), "没有价格 = 不可购买，谈不上解锁");
+        assertFalse(UnlockRules.requiresUnlock(-5));
     }
 
     @Test
-    void expensiveDerivedItemsNeedUnlocking() {
-        assertTrue(UnlockRules.requiresUnlock(UnlockRules.MIN_PRICE_TO_LOCK, false));
-        assertTrue(UnlockRules.requiresUnlock(99999, false));
+    void atTheThresholdItLocks() {
+        assertTrue(UnlockRules.requiresUnlock(UnlockRules.MIN_PRICE_TO_LOCK), "门槛本身算「要解锁」");
+        assertTrue(UnlockRules.requiresUnlock(99999));
     }
 
     @Test
@@ -132,7 +135,7 @@ class UnlockRulesTest {
     // ==================== 时间解锁（第二条路） ====================
 
     /**
-     * 时间解锁的门槛 = 买价的 95%（1 金币 = 1 秒劳动）。
+     * 时间解锁的门槛 = 买价的 95%。
      *
      * <p>为什么是 95%：留 5% 的缺口，让「主动交付一组」永远比「干等」早一点 ——
      * 否则谁都会选干等，解锁页就成了摆设。
@@ -151,16 +154,15 @@ class UnlockRulesTest {
         int price = 3000;
         long need = UnlockRules.requiredPlaySeconds(price);
         // 1) 刚开始玩、没交过 → 锁着
-        assertTrue(UnlockRules.isLocked(price, false, false, 0));
-        assertTrue(UnlockRules.isLocked(price, false, false, need - 1), "差一秒都还锁着");
+        assertTrue(UnlockRules.isLocked(price, false, 0));
+        assertTrue(UnlockRules.isLocked(price, false, need - 1), "差一秒都还锁着");
         // 2) 玩够了 → 自动开，不需要任何存档
-        assertFalse(UnlockRules.isLocked(price, false, false, need));
-        assertFalse(UnlockRules.isLocked(price, false, false, need + 86400));
+        assertFalse(UnlockRules.isLocked(price, false, need));
+        assertFalse(UnlockRules.isLocked(price, false, need + 86400));
         // 3) 交过一组 → 立刻开，和新号老号无关
-        assertFalse(UnlockRules.isLocked(price, false, true, 0));
-        // 4) 本来就不用解锁的两档：种子价、便宜货 —— 价格/时间都不参与
-        assertFalse(UnlockRules.isLocked(price, true, false, 0));
-        assertFalse(UnlockRules.isLocked(UnlockRules.MIN_PRICE_TO_LOCK - 1, false, false, 0));
+        assertFalse(UnlockRules.isLocked(price, true, 0));
+        // 4) 便宜货 → 价格/时间都不参与
+        assertFalse(UnlockRules.isLocked(UnlockRules.MIN_PRICE_TO_LOCK - 1, false, 0));
     }
 
     /**
@@ -170,6 +172,6 @@ class UnlockRulesTest {
     @Test
     void cheapItemsAreNeverTimeLockedEvenForBrandNewPlayers() {
         int cheap = UnlockRules.MIN_PRICE_TO_LOCK - 1;
-        assertFalse(UnlockRules.isLocked(cheap, false, false, 0));
+        assertFalse(UnlockRules.isLocked(cheap, false, 0));
     }
 }

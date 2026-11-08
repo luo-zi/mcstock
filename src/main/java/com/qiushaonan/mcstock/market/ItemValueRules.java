@@ -17,8 +17,12 @@ import java.util.HashMap;
 import java.util.Map;
 
 /**
- * 物品估值的**种子表**：数据包 JSON 里作者手写的价格，是整张估值表的锚点
- * （没有种子的物品才轮到配方推导，见 {@link ItemValuator}）。
+ * 物品估值的**地板表**：数据包 JSON 里作者手写的价格。
+ *
+ * <p>⚠️ 语义是<b>地板</b>，不是锚：配方推导照跑，地板只在推导值更低时把它托起来；
+ * 推出来更高就听推导的。这是照 Upgrader + ATM10 Balance 的口径做的 ——
+ * 整合包里那些「没有配方」的关键资源（Allthemodium 之类）只能靠这里给个最低价。
+ * 详见 {@link ItemValuator} 类注释「地板 ≠ 锚」。
  *
  * <h2>数据包格式</h2>
  * 文件放在 {@code data/<命名空间>/mcstock/item_values/*.json}，本模组自己那份在
@@ -26,8 +30,9 @@ import java.util.Map;
  * <pre>{@code
  * { "values": { "minecraft:diamond": 40, "#minecraft:logs": 4 } }
  * }</pre>
- * 键以 {@code #} 开头的按**物品标签**处理，命中标签的物品都拿到这个价。
+ * 键以 {@code #} 开头的按**物品标签**处理，命中标签的物品都拿到这个地板。
  * 同一个键在多个文件里重复时取最大值（数据包之间的加载顺序不该影响价格）。
+ * 值为 {@code 0}（或负数）表示**拉黑**：这件物品既不算也不收，连配方推导一起废掉。
  *
  * <p>目录名是 {@code "mcstock/item_values"} 而不是 {@code "item_values"}：
  * 原版监听器的目录直接落在 {@code data/<命名空间>/} 下（{@code recipe}、{@code advancement}…），

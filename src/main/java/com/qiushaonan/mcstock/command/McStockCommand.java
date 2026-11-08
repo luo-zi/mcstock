@@ -42,7 +42,7 @@ import java.util.Locale;
  *   /mcstock advance                    立刻跳一次价（不用等 2 秒）
  *   /mcstock value [hand|held]          手持物品的估值 / 采购价 / 来源（种子值？标签值？推导值？）
  *   /mcstock positions                  自己的全部仓位（id/股票/多空/股数/均价/保证金/浮盈）
- *   /mcstock audit [数量]                采购价最高的前 N 件（回收价 / 买价 / 劳动时间 / 冷却）
+ *   /mcstock audit [数量]                买价最高的前 N 件（卖价 / 推导值 / 地板抬了多少 / 买价 / 冷却）
  *   /mcstock cond [list]                 自己的全部条件单
  *   /mcstock cond add &lt;股票&gt; &lt;above|below&gt; &lt;触发价&gt; &lt;buy|sell|close&gt; [数量] [杠杆]
  *                                       挂一张条件单（价格按金币输入，允许两位小数）
@@ -284,8 +284,8 @@ public final class McStockCommand {
         source.sendSuccess(() -> Component.translatable("message.mcstock.cmd.value",
                 stack.getHoverName(), id.toString(),
                 Integer.toString(value), Integer.toString(purchase), origin), false);
-        // 两条轨道分开看：回收价（材料成本）与买价（可能是劳动时间顶上去的）差很远时，
-        // 这第二行是唯一能看出「为什么这么贵」的地方（和 audit 共用同一行文案）
+        // 「卖 / 推导 / 地板 / 买 / 冷却」分开看：卖价比推导值高多少，就是这个物品的地板
+        // 托了多少 —— 这是判断「地板写得对不对」唯一的一手信息（和 audit 共用同一行文案）
         sendPricingDetail(source, id, value, purchase);
         return 1;
     }
@@ -293,10 +293,10 @@ public final class McStockCommand {
     /**
      * {@code /mcstock audit [数量]}：**采购价最高的前 N 件**，一行一件。
      *
-     * <p>为什么需要它：买价现在有两条轨道（材料价 / 劳动时间），整合包里到底哪些物品被
-     * 顶到了什么价位、工序步长调得合不合适，光看数据包是看不出来的 ——
-     * 只能反过来问估值器。这也是调 {@code recipe_steps} 那份数据包的唯一依据：
-     * 改一个数字、跑一次 audit、看末端物品的价格是不是落在了想要的区间。
+     * <p>为什么需要它：价格 = {@code max(配方推导, 地板)}，而「这个价到底是推出来的还是
+     * 地板托起来的」在数据包里查不到 —— 只能反过来问估值器。这也是调 {@code values}
+     * 那份数据包的**唯一**依据：改一个地板、跑一次 audit、看那件物品的「地板 +N」是不是
+     * 变成了 0（变成 0 就说明地板白写了，推导本来就更高）。
      *
      * <p>按买价降序而不是按 id：要看的正是「被顶得最高的那批」。
      */
@@ -310,8 +310,15 @@ public final class McStockCommand {
         java.util.List<ResourceLocation> ids = new java.util.ArrayList<>(table.keySet());
         ids.sort((a, b) -> Integer.compare(ItemValuator.purchasePrice(b), ItemValuator.purchasePrice(a)));
         int n = Math.min(limit, ids.size());
+        // 无价件数 = 注册表里的物品总数 − 有价件数。这个数才是「整合包里有多少东西
+        // 既收不了也买不到」的现场证据：ATM10 里它通常很大，且**这是设计如此**
+        //（没有配方就算不出价，我们不出价也不兜底）
+        int total = BuiltInRegistries.ITEM.size();
+        int priceless = Math.max(0, total - table.size());
+        int conflicts = ItemValuator.conflictCount();
         source.sendSuccess(() -> Component.translatable("message.mcstock.cmd.audit_header",
-                Integer.toString(n), Integer.toString(ids.size())), false);
+                Integer.toString(table.size()), Integer.toString(priceless),
+                Integer.toString(conflicts), Integer.toString(n)), false);
         for (int i = 0; i < n; i++) {
             ResourceLocation id = ids.get(i);
             sendPricingDetail(source, id, ItemValuator.value(id), ItemValuator.purchasePrice(id));
@@ -320,21 +327,26 @@ public final class McStockCommand {
     }
 
     /**
-     * 一行「回收 X / 买 Y / 劳动 Z 分 / 冷却 W」——{@code value} 与 {@code audit} 共用。
+     * 一行「卖 X / 推导 Y（地板 +Z）/ 买 P / 冷却 C」——{@code value} 与 {@code audit} 共用。
+     *
+     * <p>「地板 +Z」是这一行里唯一需要解释的字段：{@code Z = 卖 − 推导}，
+     * 也就是<b>地板把这件物品抬了多少</b>。{@code Z == 0} 有两种含义 ——
+     * 没写地板，或者写了但推导本来就更高（写了也没用）。两种都该被作者看见。
      *
      * <p>冷却用「分」还是「秒」按大小自动选：一件 8000 金币的物品写「8000 秒」没人看得懂，
      * 一件 3 金币的写「0 分」又像是没有冷却。
      */
     private static void sendPricingDetail(CommandSourceStack source, ResourceLocation id,
                                           int value, int purchase) {
-        double minutes = ItemValuator.laborMinutes(id);
+        int derived = ItemValuator.derived(id);
+        int lift = Math.max(0, value - derived);
         int cooldown = ItemValuator.cooldownSeconds(purchase);
-        String labor = String.format(Locale.ROOT, "%.1f", minutes);
         String cd = cooldown >= 60
                 ? (cooldown / 60) + "分"
                 : cooldown + "秒";
         source.sendSuccess(() -> Component.translatable("message.mcstock.cmd.audit_line",
-                id.toString(), Integer.toString(value), Integer.toString(purchase), labor, cd), false);
+                id.toString(), Integer.toString(value), Integer.toString(derived),
+                Integer.toString(lift), Integer.toString(purchase), cd), false);
     }
 
     /** 来源明细 → 一行文字（物品种子 / 标签种子 / 配方推导 / 无来源）。 */

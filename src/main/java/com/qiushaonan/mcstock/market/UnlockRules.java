@@ -38,12 +38,12 @@ public final class UnlockRules {
      *
      * <p>取 500 的理由：低于它的东西（泥土、铁、木材、常见矿物）本来就该在购买页随手买，
      * 给它们上锁只会让界面变成一片灰。真正会把「开局捡点东西换后期物品」做实的是高价物品，
-     * 而 500 金币 ≈ 8 分钟劳动（按 60 金币/分钟），这是「随便捡点」够不到、但正常玩一定过得去的线。
+     * 而 500 金币 ≈ 8 分钟游戏时间，这是「随便捡点」够不到、但正常玩一定过得去的线。
      */
     public static final int MIN_PRICE_TO_LOCK = 500;
 
     /**
-     * 「等时间」这条路的系数：玩到这个物品劳动时间的 95%，它就自动开放。
+     * 「等时间」这条路的系数：玩到这件物品价格对应时长的 95%，它就自动开放。
      *
      * <p>为什么是 95% 而不是 100%：100% 会和「交一组解锁」这条路**恰好撞上**——
      * 一个玩家攒够劳动时间的那一刻，他通常也已经攒够了一组能交的货。
@@ -82,18 +82,21 @@ public final class UnlockRules {
     }
 
     /**
-     * 这件物品要不要上锁。
+     * 这件物品要不要上锁：<b>只看价格够不够高</b>。
      *
-     * <p>⚠️ <b>有种子的物品（数据包手写价的那些）一律不上锁</b>：它们是原版基础物资，
-     * 也是整张兑换尺度的锚（{@code ExchangeRateTest} 守的就是它们），
-     * 给它们上锁等于把购买页清空 —— 那不是这套机制想要的效果。
-     * 上锁的只有「靠配方推导出价格的模组物品」，也就是整合包里真正会「以材料价买到后期货」的那一批。
+     * <p>⚠️ 这里**故意不看「有没有种子」**。旧版有一条「数据包写了种子的物品一律不上锁」，
+     * 理由是「它们是购买页的基础物资」—— 那在<b>锚</b>语义下成立（种子只给基础物资写）。
+     * 改成<b>地板</b>语义之后这条彻底反了：数据包写地板的恰恰是 Allthemodium 这类
+     * <b>关键进度物品</b>（因为它们没有配方、推不出价），按旧规矩它们会<b>恰好绕过解锁</b>，
+     * 而那正是这套机制唯一想拦的东西。
+     *
+     * <p>基础物资不需要豁免：木板、铁锭、钻石这些的地板价远低于
+     * {@link #MIN_PRICE_TO_LOCK}，天然不会被锁。
      *
      * @param purchasePrice 采购价（金币）；{@code <= 0} 表示不可购买
-     * @param seeded        这一项的价格是不是数据包直接写的（{@link ItemValuator.Origin}）
      */
-    public static boolean requiresUnlock(int purchasePrice, boolean seeded) {
-        return !seeded && purchasePrice >= MIN_PRICE_TO_LOCK;
+    public static boolean requiresUnlock(int purchasePrice) {
+        return purchasePrice >= MIN_PRICE_TO_LOCK;
     }
 
     /**
@@ -101,23 +104,22 @@ public final class UnlockRules {
      *
      * <p>三条路，任何一条成立就开：
      * <ol>
-     *   <li>本来就不用解锁（有种子价的基础物资，或者便宜到不影响进度）；</li>
+     *   <li>便宜到不影响进度（见 {@link #requiresUnlock}）；</li>
      *   <li><b>交过一组</b>（{@code delivered}，存在 {@code ModAttachments.UNLOCKED} 里）；</li>
-     *   <li><b>玩够了它对应的劳动时间</b>（见 {@link #requiredPlaySeconds}）—— 这条路不需要存档，
+     *   <li><b>玩够了它对应的时长</b>（见 {@link #requiredPlaySeconds}）—— 这条路不需要存档，
      *       是「算出来的」，所以老存档进来也立刻正确，不需要迁移。</li>
      * </ol>
      *
-     * <p>⚠️ 参数刻意全是从外部算好传进来的（价格、是否种子、是否交付过、游戏时间），
+     * <p>⚠️ 参数刻意全是从外部算好传进来的（价格、是否交付过、游戏时间），
      * 本方法**不碰玩家对象、不碰估值器**：这样服务端与客户端可以调同一份判定，
      * 不会出现「界面说能买、服务端说不能」的错位。
      *
      * @param purchasePrice 采购价（金币）；{@code <= 0} 视为不用解锁
-     * @param seeded        价格是不是数据包直接写的
      * @param delivered     这个玩家是不是已经交过一组
      * @param playSeconds   这个玩家的**累计游戏时间**（秒）
      */
-    public static boolean isLocked(int purchasePrice, boolean seeded, boolean delivered, long playSeconds) {
-        if (!requiresUnlock(purchasePrice, seeded) || delivered) {
+    public static boolean isLocked(int purchasePrice, boolean delivered, long playSeconds) {
+        if (!requiresUnlock(purchasePrice) || delivered) {
             return false;
         }
         return playSeconds < requiredPlaySeconds(purchasePrice);
@@ -126,8 +128,9 @@ public final class UnlockRules {
     /**
      * 一个物品要玩多久（**秒**）才自动开放 = 采购价的 95%。
      *
-     * <p>为什么直接用价格：1 金币 = 1 秒劳动（{@link ItemValuator#cooldownSeconds} 里那条换算），
-     * 所以「价格对应的劳动时间」就是价格本身，不需要第二套标定。
+     * <p>为什么直接用价格：这套经济里 <b>1 金币 ≈ 1 秒劳动</b>（回收价就是「做出它要多少东西」
+     * 的度量，冷却也是按这个换算的），所以「价格对应的时长」就是价格本身，
+     * 不需要第二套标定。
      * 一件 3000 金币的物品要 2850 秒 ≈ 48 分钟游戏时间；
      * 一件 6000 金币的要近 1.6 小时。**回报越贵的东西，等得越久**，这是这条机制的全部内容。
      *
