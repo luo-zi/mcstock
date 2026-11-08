@@ -204,4 +204,53 @@ class UnlockRulesTest {
         int cheap = UnlockRules.MIN_PRICE_TO_LOCK - 1;
         assertFalse(UnlockRules.isLocked(cheap, false, 0));
     }
+
+    // ==================== 进度档（显式阶段） ====================
+
+    /**
+     * 显式阶段**盖过**按价格算出来的时长 —— 而且**长短都盖**。
+     *
+     * <p>这条钉住的是玩家明确提出的那次换轨：「你用的线性增长并不好……ATM10 锭仍然是应该
+     * 在整个 MC 原版流程的耗时 2 倍时长后开放」。按价格算 3000 金币只要 47 分钟，
+     * 而它该等 48 小时；反过来，一条长机器链的末端产物很贵，但它的阶段并不晚，
+     * 这时阶段又该把它**拉早**。一个数调不出两件事，所以显式阶段优先。
+     */
+    @Test
+    void explicitStageBeatsThePriceFormulaInBothDirections() {
+        // 价格说 2850 秒（47 分钟），阶段说 48 小时 → 听阶段的
+        assertEquals(2850L, UnlockRules.requiredPlaySeconds(3000, 0), "没写阶段，才按价格算");
+        assertEquals(48L * 3600L, UnlockRules.requiredPlaySeconds(3000, 48));
+        // 价格说 95 万秒（11 天），阶段说 2 小时 → 也听阶段的
+        assertEquals(7200L, UnlockRules.requiredPlaySeconds(1_000_000, 2));
+    }
+
+    @Test
+    void explicitStageStillObeysTheThirtyDayCap() {
+        long cap = UnlockRules.MAX_REQUIRED_PLAY_SECONDS;
+        assertEquals(cap, UnlockRules.requiredPlaySeconds(1000, 999), "999 小时超过 30 天，截到上限");
+        assertEquals(cap, UnlockRules.requiredPlaySeconds(1000, UnlockStages.MAX_HOURS),
+                "上限本身（720 小时）正好等于 30 天");
+    }
+
+    @Test
+    void aWrittenStageLocksEvenACheapItem() {
+        // 价格不到 500 的门槛，但作者写了阶段 → 照样要等
+        int cheap = UnlockRules.MIN_PRICE_TO_LOCK - 1;
+        assertFalse(UnlockRules.isLocked(cheap, false, 0), "没写阶段时便宜货永远随手可买");
+        assertTrue(UnlockRules.isLocked(cheap, false, 0, 48), "写了阶段就等于上锁 —— 否则作者没法给便宜的矿粒设卡");
+        assertTrue(UnlockRules.isLocked(cheap, false, 48L * 3600L - 1, 48), "差一秒都还锁着");
+        assertFalse(UnlockRules.isLocked(cheap, false, 48L * 3600L, 48));
+    }
+
+    @Test
+    void deliveringFullStackBeatsAnyStage() {
+        assertFalse(UnlockRules.isLocked(3000, true, 0, 48), "交过一组就是已经证明了产能，不等");
+    }
+
+    @Test
+    void zeroStageMeansNoStage() {
+        assertFalse(UnlockRules.isLocked(UnlockRules.MIN_PRICE_TO_LOCK - 1, false, 0, 0));
+        // 价格本来就过门槛时，0 阶段等于没写：仍然按价格算
+        assertEquals(UnlockRules.requiredPlaySeconds(3000), UnlockRules.requiredPlaySeconds(3000, 0));
+    }
 }

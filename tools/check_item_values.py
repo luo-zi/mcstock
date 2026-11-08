@@ -13,8 +13,12 @@
 在原版数据里当然查不到，它们的正确性由运行期 `/mcstock audit` 与
 `ItemValuator` 的「地板指向不存在的物品」告警来兜。
 
+`unlock_hours` 段（进度档）的键用同一套规则校验，另外多查一条**数值范围**：
+必须是 1..720（720 = 30 天，见 `UnlockStages.MAX_HOURS`）。写了 0 等于「没写」，
+写了 9999 会被夹到 720 —— 两种都算笔误，脚本直接报出来，别等运行期看日志。
+
 用法：python tools/check_item_values.py
-退出码 0 = 全部通过（或找不到 client-extra 而跳过）；1 = 有非法键。
+退出码 0 = 全部通过（或找不到 client-extra 而跳过）；1 = 有非法键 / 非法值。
 """
 from __future__ import annotations
 
@@ -49,7 +53,9 @@ def main() -> int:
         return 1
 
     values: dict[str, int] = {}
+    stages: dict[str, int] = {}
     skipped_mod: list[str] = []
+    bad_stage_values: list[str] = []
     doc_sections = 0
     for path in files:
         table = json.loads(path.read_text(encoding="utf-8"))
@@ -59,13 +65,21 @@ def main() -> int:
                 skipped_mod.append(key)
                 continue
             values[key] = value
+        for key, hours in table.get("unlock_hours", {}).items():
+            # 数值范围先查（与命名空间无关：模组键的笔误一样该报）
+            if not isinstance(hours, int) or isinstance(hours, bool) or not 1 <= hours <= 720:
+                bad_stage_values.append(f"{key} = {hours!r}")
+            if namespace_of(key) != "minecraft":
+                skipped_mod.append(key)
+                continue
+            stages[key] = hours
 
     jar = find_client_extra()
     if jar is None:
         print("[跳过] 找不到 client-extra（先跑一次 .\\gradlew.bat build 生成它）：", ARTIFACT_DIR)
         print(f"       {len(files)} 个文件、{len(values)} 个原版键、跳过 {len(skipped_mod)} 个模组键；"
-              f"分档文档 {doc_sections} 段")
-        return 0
+              f"分档文档 {doc_sections} 段；进度档 {len(stages)} 个原版键")
+        return 1 if bad_stage_values else 0
 
     with zipfile.ZipFile(jar) as zf:
         item_tags = {
@@ -77,7 +91,8 @@ def main() -> int:
 
     bad_tags: list[str] = []
     bad_items: list[str] = []
-    for key in values:
+    # 两段共用同一套键校验：进度档写错键和价格写错键一样是静默失效
+    for key in list(values) + list(stages):
         if key.startswith("#"):
             tag = key[1:].split(":", 1)[-1]
             if tag not in item_tags:
@@ -87,12 +102,22 @@ def main() -> int:
             if f"item.minecraft.{name}" not in en_us and f"block.minecraft.{name}" not in en_us:
                 bad_items.append(key)
 
+    bad_tags = sorted(set(bad_tags))
+    bad_items = sorted(set(bad_items))
+
     print(f"{len(files)} 个文件：{len(values)} 个原版键"
           f"（物品 {sum(1 for k in values if not k.startswith('#'))}、"
           f"标签 {sum(1 for k in values if k.startswith('#'))}），"
+          f"进度档 {len(stages)} 个原版键，"
           f"跳过 {len(skipped_mod)} 个模组键")
     print(f"原版物品标签共 {len(item_tags)} 个")
     failed = False
+    if bad_stage_values:
+        failed = True
+        print(f"[失败] {len(bad_stage_values)} 个进度档数值不合法（必须是 1..720 的整数，"
+              f"720 = 30 天；写 0 等于没写、写超了会被夹取）：")
+        for entry in bad_stage_values:
+            print("    .", entry)
     if bad_tags:
         failed = True
         print(f"[失败] {len(bad_tags)} 个标签不是**物品**标签（写了也不生效）：")
@@ -104,7 +129,7 @@ def main() -> int:
         for key in bad_items:
             print("    .", key)
     if not failed:
-        print("[OK] 每个原版键都指向真实存在的物品 / 物品标签")
+        print("[OK] 每个原版键都指向真实存在的物品 / 物品标签，进度档数值都在 1..720")
     print("结果：" + ("**失败**" if failed else "**通过**"))
     return 1 if failed else 0
 

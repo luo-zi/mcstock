@@ -64,7 +64,7 @@ public final class StockClientState {
      *
      * <p>它装的是**交付过一组**的那批（{@code ModAttachments.UNLOCKED}）。
      * 「玩够时间自动开放」那条路**不在这里**——它是算出来的
-     * （{@link #playSeconds} + 买价，见 {@code UnlockRules#isLocked}），
+     * （{@link #playSeconds} + 买价 / 进度档，见 {@code UnlockRules#isLocked}），
      * 所以既不会撑大这个集合，也不需要任何存档迁移。
      */
     public static java.util.Set<ResourceLocation> unlocked = java.util.Set.of();
@@ -73,11 +73,42 @@ public final class StockClientState {
      * 这个玩家的**累计游戏时间**（秒），随解锁表一起推下来。
      *
      * <p>为什么客户端要它：解锁页要显示「这一项是现在就能交、还是得再等等」，
-     * 而「时间解锁」的判据只用得到「买价 + 游戏时间」这两个数 ——
-     * 价格在目录里、时间在这里，客户端就能和服务端算出**同一个结论**
+     * 而「时间解锁」的判据只用得到「买价（或进度档）+ 游戏时间」这几个数 ——
+     * 价格在目录里、时间与进度档在这里，客户端就能和服务端算出**同一个结论**
      * （两端调的是同一份 {@code UnlockRules#isLocked}）。
      */
     public static int playSeconds = 0;
+
+    /**
+     * 进度档：物品 id → **第几小时游戏时间**开放（协议 v8，由 {@code S2CUnlocked} 整份替换）。
+     *
+     * <p>为什么不跟价格一样从目录里拿：目录里只有价，**没有阶段** —— 阶段是服务端从
+     * 数据包的 {@code unlock_hours} 段算出来的，客户端不加载那份数据。
+     * 缺了它，界面会把「按价格算只要 47 分钟」的 Allthemodium 锭显示成已开放，
+     * 点下去却被服务端回绝。
+     *
+     * <p>查不到 = 这个物品没写阶段，回落到按买价算（见 {@code UnlockRules#requiredPlaySeconds}）。
+     */
+    public static java.util.Map<ResourceLocation, Integer> unlockStages = java.util.Map.of();
+
+    /**
+     * 解锁数据的**版本号**：{@code S2CUnlocked} 每到一份就 +1。
+     *
+     * <p>解锁页的预演结果是**缓存**的（目录 7 千条，不能每 tick 重算），缓存键是
+     * 「投放区 18 格 + 游戏时间（分钟）」。少了这个版本号，交付一组之后
+     * （投放区被清空、但 id 列表变了）或进度档刚到（服务端晚一个包）时，
+     * 缓存不会失效，界面就会停在旧结论上。
+     */
+    public static int unlockVersion = 0;
+
+    /** 这件物品的进度档（小时）；0 = 没写，回落到按买价算。 */
+    public static int unlockHours(ResourceLocation id) {
+        if (id == null) {
+            return 0;
+        }
+        Integer found = unlockStages.get(id);
+        return found == null ? 0 : found;
+    }
 
     /** 这件物品是不是「交付过一组」（只对需要上锁的物品有意义，见 {@link #unlocked}）。 */
     public static boolean isUnlocked(ResourceLocation id) {

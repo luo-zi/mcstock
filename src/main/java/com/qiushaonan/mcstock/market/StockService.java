@@ -727,7 +727,11 @@ public final class StockService {
      * 这个物品**现在能不能买**（在价格合法之后、扣钱之前的最后一道门）。
      *
      * <p>口径全部交给 {@link UnlockRules#isLocked}（服务端与客户端共用那一份），
-     * 这里只负责把三个输入凑出来：买价、是否交付过一组、玩家累计游戏时间。
+     * 这里只负责把四个输入凑出来：买价、是否交付过一组、玩家累计游戏时间、进度档。
+     *
+     * <p>⚠️ 「玩够多久才开」现在**优先听数据包的进度档**（{@link UnlockStages}），
+     * 没写才回落到「买价 × 0.95 秒」。拆成两个轴的理由见 {@link UnlockStages} 类注释 ——
+     * 一句话：价格回答「值多少东西」，阶段回答「什么时候该出现」，不能用同一个数。
      *
      * <p>⚠️ 现在**不看「有没有种子」**了（那条豁免已经删掉，理由见
      * {@link UnlockRules#requiresUnlock}）：地板模型下数据包写价的正是应当上锁的关键物品。
@@ -740,7 +744,8 @@ public final class StockService {
             return false;
         }
         int price = ItemValuator.purchasePrice(id);
-        return !UnlockRules.isLocked(price, unlocked(player).contains(id), playSeconds(player));
+        return !UnlockRules.isLocked(price, unlocked(player).contains(id), playSeconds(player),
+                UnlockStages.hours(id));
     }
 
     /**
@@ -905,11 +910,20 @@ public final class StockService {
         }
     }
 
-    /** 把这个玩家的已解锁表整份推给客户端（进界面、解锁成功后各一次）。 */
+    /**
+     * 把这个玩家的已解锁表整份推给客户端（进界面、解锁成功后各一次）。
+     *
+     * <p>⚠️ **进度档也要一起推**（协议 v8）：客户端要用「进度档 + 游戏时间」自己算
+     * 「这一项是现在就能买、还是得再等等」，而那张表是服务端从数据包算出来的、
+     * 客户端根本没有（它不加载估值数据包）。少推这一份，界面就会把 Allthemodium 锭
+     * 显示成「已经开放」，点下去却被服务端回绝。
+     */
     public static void sendUnlocked(ServerPlayer player) {
         java.util.Set<ResourceLocation> set = unlocked(player);
         PacketDistributor.sendToPlayer(player, new com.qiushaonan.mcstock.network.S2CUnlocked(
-                List.copyOf(set), (int) Math.min(Integer.MAX_VALUE, playSeconds(player))));
+                List.copyOf(set),
+                (int) Math.min(Integer.MAX_VALUE, playSeconds(player)),
+                UnlockStages.snapshot()));
     }
 
     // ==================== 采购冷却 ====================
@@ -1049,7 +1063,8 @@ public final class StockService {
         if (!isUnlocked(player, itemId)) {
             // 两条路都告诉玩家：交付一组（快），或者干等到自己的游戏时间够（慢但确定）。
             // 报「还要等多久」而不是只说「没解锁」—— 否则玩家会以为这条路是死胡同。
-            long need = UnlockRules.requiredPlaySeconds(unit) - playSeconds(player);
+            // 时长优先按数据包写的进度档算（{@link UnlockStages}），没写才回落到买价
+            long need = UnlockRules.requiredPlaySeconds(unit, UnlockStages.hours(itemId)) - playSeconds(player);
             // 等待可能是「分钟 / 小时 / 天」三档之一（最贵的一档能到 30 天）。
             // 键与文案必须成对取，否则会出现「再玩 5.9 分钟」这种单位错位。
             flash(player, waitKey("message.mcstock.unlock.locked", need),

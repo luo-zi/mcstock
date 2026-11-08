@@ -1543,6 +1543,10 @@ public class StockScreen extends AbstractContainerScreen<StockMenu> {
         //    某一项的 already 从 false 翻成 true（界面该从「可解锁」变成「不用解锁」）。
         //    按**分钟**取整而不是按秒 —— 否则每秒都要重算一遍整份预演（目录是 7 千条）。
         sb.append('#').append(StockClientState.playSeconds / 60);
+        // 解锁数据（交付表 / 进度档）也要进签名：它们到货时投放区可能一个字没变，
+        // 但结论会整个变（交付之后该项 → already；进度档到了 → 有些项要重新置灰）。
+        // 用版本号而不是哈希整张表：一张表几千条，没必要每帧算一遍。
+        sb.append('!').append(StockClientState.unlockVersion);
         return sb.toString();
     }
 
@@ -1582,8 +1586,10 @@ public class StockScreen extends AbstractContainerScreen<StockMenu> {
         // 「玩够时间就自动开放」那条路：判据与服务端是同一份（UnlockRules#isLocked），
         // 客户端缺的只有「这个玩家交没交过」—— 猜错的后果是按钮亮着、服务端回一句
         // 「已经不需要解锁」，**不会消耗任何物品**（服务端 already 是权威）。
+        // ⚠️ 进度档要跟着传：不传就等于「这件物品没写阶段」，客户端会按买价算 ——
+        //    Allthemodium 锭会因此被当成「47 分钟就开放」，和服务端唱反调。
         return !UnlockRules.isLocked((int) Math.min(Integer.MAX_VALUE, price), false,
-                StockClientState.playSeconds);
+                StockClientState.playSeconds, StockClientState.unlockHours(id));
     }
 
     /** 目录里的单价（**金币**，和 {@code shopPrices} 同口径）；不在目录里返回 0。 */

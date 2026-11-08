@@ -14,6 +14,8 @@ import com.qiushaonan.mcstock.market.StockCatalog;
 import com.qiushaonan.mcstock.market.StockDefs;
 import com.qiushaonan.mcstock.market.StockMarketData;
 import com.qiushaonan.mcstock.market.StockService;
+import com.qiushaonan.mcstock.market.UnlockRules;
+import com.qiushaonan.mcstock.market.UnlockStages;
 import com.qiushaonan.mcstock.menu.StockMenu;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
@@ -316,9 +318,12 @@ public final class McStockCommand {
         int total = BuiltInRegistries.ITEM.size();
         int priceless = Math.max(0, total - table.size());
         int conflicts = ItemValuator.conflictCount();
+        // 进度档条数：这是「我写的 unlock_hours 到底生效了几条」的唯一现场证据
+        // （标签展开后的物品数，不是 JSON 里的行数 —— 一行 #c:ingots/* 可能展开成几十条）
+        int staged = UnlockStages.snapshot().size();
         source.sendSuccess(() -> Component.translatable("message.mcstock.cmd.audit_header",
                 Integer.toString(table.size()), Integer.toString(priceless),
-                Integer.toString(conflicts), Integer.toString(n)), false);
+                Integer.toString(conflicts), Integer.toString(staged), Integer.toString(n)), false);
         for (int i = 0; i < n; i++) {
             ResourceLocation id = ids.get(i);
             sendPricingDetail(source, id, ItemValuator.value(id), ItemValuator.purchasePrice(id));
@@ -346,7 +351,40 @@ public final class McStockCommand {
                 : cooldown + "秒";
         source.sendSuccess(() -> Component.translatable("message.mcstock.cmd.audit_line",
                 id.toString(), Integer.toString(value), Integer.toString(derived),
-                Integer.toString(lift), Integer.toString(purchase), cd), false);
+                Integer.toString(lift), Integer.toString(purchase), cd,
+                firstOpenText(id, purchase)), false);
+    }
+
+    /**
+     * 「首开」= 这件物品第几小时游戏时间才允许买。
+     *
+     * <p>写法照搬上面冷却那一段（数字 + 单位直接拼）：这是给整合包作者看的诊断行，
+     * 不是玩家界面的文案，不值得为它加一个带单位的语言键。
+     *
+     * <p>⚠️ 两种来源必须**看得出区别**（这就是它存在的意义）：{@code 48h} 是数据包
+     * {@code unlock_hours} 里写的阶段；后面带「按价」的是没写阶段、回落公式算出来的。
+     * 作者调表时最想知道的就是「这条到底是我写的，还是系统兜的」。
+     */
+    private static String firstOpenText(ResourceLocation id, int purchase) {
+        int stageHours = UnlockStages.hours(id);
+        if (stageHours > 0) {
+            return stageHours + "h";
+        }
+        long seconds = UnlockRules.requiredPlaySeconds(purchase);
+        if (seconds <= 0) {
+            return "-";
+        }
+        String amount;
+        if (seconds >= 86400) {
+            amount = (seconds / 86400) + "天";
+        } else if (seconds >= 3600) {
+            amount = (seconds / 3600) + "小时";
+        } else if (seconds >= 60) {
+            amount = (seconds / 60) + "分";
+        } else {
+            amount = seconds + "秒";
+        }
+        return amount + "（按价）";
     }
 
     /** 来源明细 → 一行文字（物品种子 / 标签种子 / 配方推导 / 无来源）。 */

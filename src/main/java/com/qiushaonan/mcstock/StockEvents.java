@@ -7,6 +7,7 @@ import com.qiushaonan.mcstock.market.ItemValuator;
 import com.qiushaonan.mcstock.market.MinecraftRecipeGraph;
 import com.qiushaonan.mcstock.market.StockDefs;
 import com.qiushaonan.mcstock.market.StockService;
+import com.qiushaonan.mcstock.market.UnlockStages;
 import net.minecraft.core.HolderSet;
 import net.minecraft.core.Registry;
 import net.minecraft.core.registries.BuiltInRegistries;
@@ -275,8 +276,14 @@ public final class StockEvents {
                     for (Item item : BuiltInRegistries.ITEM) {
                         allItems.add(BuiltInRegistries.ITEM.getKey(item));
                     }
+                    // 标签只展开一次：估值表和进度档用的是同一份（展开要遍历所有模组的标签，不便宜）
+                    Map<ResourceLocation, Set<ResourceLocation>> members = tagMembers();
+                    // 进度档先建：它和价格是两条独立的线，而且解锁判定要用它 ——
+                    // 万一下面估值那边炸了（配方图坏掉），至少「什么时候能买」还是新的
+                    UnlockStages.rebuild(ItemValueRules.itemUnlockHours(), ItemValueRules.tagUnlockHours(),
+                            members, allItems, graph);
                     ItemValuator.rebuild(modPresentSeeds(allItems), ItemValueRules.tagSeeds(),
-                            tagMembers(), allItems, graph);
+                            members, allItems, graph);
                     valuesBuilt = true;
                     return Boolean.TRUE;
                 },

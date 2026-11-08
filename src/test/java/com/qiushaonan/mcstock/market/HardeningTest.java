@@ -83,6 +83,44 @@ class HardeningTest {
                 "成功的 reload 是整体替换：这次只有 emerald 一个条目，实际 " + ItemValueRules.itemSeeds());
     }
 
+    /**
+     * 进度档（{@code unlock_hours}）：段里的坏条目只丢那一条，绝不影响价格段，也不许抛。
+     *
+     * <p>两段在同一个文件里，最容易踩的坑是「一个值的类型写错 → 整个文件被丢掉 → 价格也没了」。
+     * 实际实现是**逐条 try/catch**，所以钻石的价格和阶段能一起活下来。
+     */
+    @Test
+    void unlockHoursSectionSurvivesMalformedEntries() {
+        ItemValueRules rules = new ItemValueRules();
+
+        Map<ResourceLocation, com.google.gson.JsonElement> files = new HashMap<>();
+        files.put(ResourceLocation.parse("mcstock:stage_mixed"), JsonParser.parseString("""
+                {
+                  "values":       {"minecraft:diamond": 300},
+                  "unlock_hours": {
+                    "minecraft:diamond": 6,
+                    "minecraft:emerald": "六小时",
+                    "#这不是标签": 8,
+                    "minecraft:wool": -2
+                  }
+                }"""));
+        assertDoesNotThrow(() -> rules.apply(files, null, null), "进度档写坏了绝不允许抛出去");
+
+        assertEquals(300, ItemValueRules.itemSeeds().get(DIAMOND), "同文件里的价格段照常生效");
+        assertEquals(6, ItemValueRules.itemUnlockHours().get(DIAMOND), "好的条目要留下");
+        assertFalse(ItemValueRules.itemUnlockHours().containsKey(ResourceLocation.parse("minecraft:emerald")),
+                "值不是整数的条目要跳过，不能保留也不能抛");
+        assertEquals(0, ItemValueRules.itemUnlockHours().getOrDefault(
+                        ResourceLocation.parse("minecraft:wool"), -1),
+                "负的阶段按 0 处理（= 没写，回落到按价格算）");
+
+        // 整段类型写错（values 是个数组）：那个文件整体失败，但不能把上一条好数据冲掉
+        Map<ResourceLocation, com.google.gson.JsonElement> broken = new HashMap<>();
+        broken.put(ResourceLocation.parse("mcstock:broken"), JsonParser.parseString("{\"values\": [1, 2, 3]}"));
+        assertDoesNotThrow(() -> rules.apply(broken, null, null));
+        assertEquals(6, ItemValueRules.itemUnlockHours().get(DIAMOND), "全部失败时要保留上一份表");
+    }
+
     @Test
     void tagSeedsSurviveUnparseableTags() {
         ItemValueRules rules = new ItemValueRules();

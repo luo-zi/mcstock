@@ -55,8 +55,13 @@ public final class ModNetwork {
      * <p>「6 → 7」的原因（时间解锁 + 采购冷却）：{@link S2CUnlocked} 头部追加了
      * {@code playSeconds}（客户端要用它自己算「玩到买价 95% 就自动开放」）。
      * 旧客户端会把那个 varint 当成「id 条数」读，整包错位 —— 必须换版本号。
+     *
+     * <p>「7 → 8」的原因（进度档）：{@link S2CUnlocked} 在 id 列表**之后**追加了一段
+     * {@code stages}（物品 → 第几小时开放的 {@code id=hours} 列表）。这是**追加**，
+     * 但旧客户端读完 id 列表就以为包结束了，多出来的字节会让它把下一个包读错位 ——
+     * 所以照样必须换版本号（凡是动了包结构，无论追加还是改序，都要换）。
      */
-    private static final String PROTOCOL_VERSION = "7";
+    private static final String PROTOCOL_VERSION = "8";
 
     private ModNetwork() {
     }

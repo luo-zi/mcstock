@@ -43,7 +43,12 @@ public final class UnlockRules {
     public static final int MIN_PRICE_TO_LOCK = 500;
 
     /**
-     * 「等时间」这条路的系数：玩到这件物品价格对应时长的 95%，它就自动开放。
+     * 「等时间」这条路的**回落系数**：没写进度档的物品，玩到它价格对应时长的 95% 就自动开放。
+     *
+     * <p>⚠️ 这条公式现在已经**不是主力**了（2026-11-10 换轨）：数据包 {@code unlock_hours}
+     * 里写了阶段的物品**一律以阶段为准**（见 {@link UnlockStages}），这条只在作者没写时兜底。
+     * 原因是「价格」和「该在哪个阶段出现」是两件事，一个数调不出两件事 ——
+     * 详细理由（含 Allthemodium 47 分钟就能买的反例）写在 {@link UnlockStages} 类注释里。
      *
      * <p>为什么是 95% 而不是 100%：100% 会和「交一组解锁」这条路**恰好撞上**——
      * 一个玩家攒够劳动时间的那一刻，他通常也已经攒够了一组能交的货。
@@ -63,8 +68,10 @@ public final class UnlockRules {
      * <ul>
      *   <li>上限取 30 天 ≈ 两倍通关时间 —— 撞到它的物品（ATM Star 那一档）
      *       在效果上就是「<b>等不来，只能交一组</b>」，这正是想要的语义；</li>
-     *   <li>低于它的部分**完全按价格算**（价格 × 0.95 秒），不做任何提前；
-     *       一件 60 万金币的块要等 5.9 天，一件 150 万的合金锭要等 14 天；</li>
+     *   <li>低于它的部分**完全按作者写的阶段 / 价格算**，不做任何提前；</li>
+     *   <li>⚠️ 两条路共用这一个上限：显式阶段（{@link UnlockStages}，单位小时，最多 720 小时）
+     *       与回落公式（价格 × 0.95 秒）走的是同一个「还差多少游戏时间」的提示，
+     *       兜底逻辑只该有一份，所以 {@link UnlockStages#MAX_HOURS} 是从这里换算出去的；</li>
      *   <li>再往上加没有意义：{@code ItemValuator#MAX_VALUE_COINS} 会把估值截在 1 亿，
      *       1 亿 × 0.95 秒 ≈ 1100 天，那种数字是截断的产物，不该出现在界面上。</li>
      * </ul>
@@ -119,6 +126,9 @@ public final class UnlockRules {
      * <p>基础物资不需要豁免：木板、铁锭、钻石这些的地板价远低于
      * {@link #MIN_PRICE_TO_LOCK}，天然不会被锁。
      *
+     * <p>⚠️ 这是**价格那一路**的门槛。数据包里写了进度档（{@link UnlockStages}）的物品
+     * 一眼就要上锁，**不看这个门槛** —— 见 {@link #isLocked(int, boolean, long, int)}。
+     *
      * @param purchasePrice 采购价（金币）；{@code <= 0} 表示不可购买
      */
     public static boolean requiresUnlock(int purchasePrice) {
@@ -130,39 +140,74 @@ public final class UnlockRules {
      *
      * <p>三条路，任何一条成立就开：
      * <ol>
-     *   <li>便宜到不影响进度（见 {@link #requiresUnlock}）；</li>
      *   <li><b>交过一组</b>（{@code delivered}，存在 {@code ModAttachments.UNLOCKED} 里）；</li>
-     *   <li><b>玩够了它对应的时长</b>（见 {@link #requiredPlaySeconds}）—— 这条路不需要存档，
-     *       是「算出来的」，所以老存档进来也立刻正确，不需要迁移。</li>
+     *   <li><b>玩够了它对应的时长</b>（见 {@link #requiredPlaySeconds(int, int)}）—— 这条路不需要存档，
+     *       是「算出来的」，所以老存档进来也立刻正确，不需要迁移；</li>
+     *   <li>便宜到不影响进度（见 {@link #requiresUnlock}）<b>且没写进度档</b>。</li>
      * </ol>
      *
-     * <p>⚠️ 参数刻意全是从外部算好传进来的（价格、是否交付过、游戏时间），
-     * 本方法**不碰玩家对象、不碰估值器**：这样服务端与客户端可以调同一份判定，
+     * <p>⚠️ 并列关系是有意的：<b>写了进度档就等于上锁</b>（哪怕价格不到
+     * {@link #MIN_PRICE_TO_LOCK}）。否则作者没法给「便宜但关键」的物品单独设阶段
+     * （比如某种矿粒），而那种东西恰恰是「开局捡一点就能换到后期货」的入口。
+     *
+     * <p>⚠️ 参数刻意全是从外部算好传进来的（价格、是否交付过、游戏时间、进度档），
+     * 本方法**不碰玩家对象、不碰估值器、也不查静态表**：这样服务端与客户端可以调同一份判定，
      * 不会出现「界面说能买、服务端说不能」的错位。
      *
      * @param purchasePrice 采购价（金币）；{@code <= 0} 视为不用解锁
      * @param delivered     这个玩家是不是已经交过一组
      * @param playSeconds   这个玩家的**累计游戏时间**（秒）
+     * @param explicitHours 数据包写的进度档（小时，{@link UnlockStages#hours}）；{@code <= 0} = 没写
      */
-    public static boolean isLocked(int purchasePrice, boolean delivered, long playSeconds) {
-        if (!requiresUnlock(purchasePrice) || delivered) {
+    public static boolean isLocked(int purchasePrice, boolean delivered, long playSeconds, int explicitHours) {
+        if (delivered) {
             return false;
         }
-        return playSeconds < requiredPlaySeconds(purchasePrice);
+        if (explicitHours <= 0 && !requiresUnlock(purchasePrice)) {
+            return false;   // 既没写阶段、价格又不到门槛：永远随手可买
+        }
+        return playSeconds < requiredPlaySeconds(purchasePrice, explicitHours);
     }
 
     /**
-     * 一个物品要玩多久（**秒**）才自动开放 = 采购价的 95%，上限 {@link #MAX_REQUIRED_PLAY_SECONDS}。
+     * 三参重载 = 「没写进度档」（回落公式）。保留它是因为大量既有调用与单测只关心价格那一路。
      *
-     * <p>为什么直接用价格：这套经济里 <b>1 金币 ≈ 1 秒劳动</b>（回收价就是「做出它要多少东西」
-     * 的度量，冷却也是按这个换算的），所以「价格对应的时长」就是价格本身，
-     * 不需要第二套标定。
-     * 一件 3000 金币的物品要 2850 秒 ≈ 48 分钟游戏时间；
-     * 一件 6000 金币的要近 1.6 小时；一件 60 万金币的块要 5.9 天。
-     * **回报越贵的东西，等得越久**，这是这条机制的全部内容。
+     * @see #isLocked(int, boolean, long, int)
+     */
+    public static boolean isLocked(int purchasePrice, boolean delivered, long playSeconds) {
+        return isLocked(purchasePrice, delivered, playSeconds, 0);
+    }
+
+    /**
+     * 一个物品要玩多久（**秒**）才自动开放。
+     *
+     * <h2>显式进度档优先（2026-11-10）</h2>
+     * {@code explicitHours > 0} 时**直接用它**（换算成秒，夹到 {@link #MAX_REQUIRED_PLAY_SECONDS}），
+     * 不看价格 —— 而且**长短都盖**：它既可以把物品推到比价格算出来的更晚
+     * （Allthemodium 锭：3000 金币按价格只要 47 分钟，按阶段要 48 小时），
+     * 也可以比价格更早（一条长机器链的末端产物很贵，但它的阶段并不晚）。
+     * 为什么必须这样，见 {@link UnlockStages} 类注释「为什么必须拆成两个轴」。
+     *
+     * <h2>没写才按价格算（回落）</h2>
+     * 这套经济里 <b>1 金币 ≈ 1 秒劳动</b>（回收价就是「做出它要多少东西」的度量），
+     * 所以「价格对应的时长」就是价格本身。一件 3000 金币的物品要 2850 秒 ≈ 48 分钟游戏时间；
+     * 一件 60 万金币的块要 5.9 天。**回报越贵的东西，等得越久**。
      *
      * <p>⚠️ 上限 30 天只用来兜底数值崩坏，**不是**「让玩家等得起」的折扣 ——
      * 详见 {@link #MAX_REQUIRED_PLAY_SECONDS} 里那段历史教训。
+     *
+     * @return 秒；两者都没有（{@code purchasePrice <= 0} 且没写阶段）时返回 0
+     */
+    public static long requiredPlaySeconds(int purchasePrice, int explicitHours) {
+        if (explicitHours > 0) {
+            long wanted = (long) explicitHours * 3600L;
+            return Math.min(wanted, MAX_REQUIRED_PLAY_SECONDS);
+        }
+        return requiredPlaySeconds(purchasePrice);
+    }
+
+    /**
+     * 「没写进度档」时的回落公式：采购价的 95%，上限 {@link #MAX_REQUIRED_PLAY_SECONDS}。
      *
      * @return 秒；{@code purchasePrice <= 0} 返回 0
      */
